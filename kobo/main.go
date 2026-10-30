@@ -169,6 +169,7 @@ type App struct {
 	warnings    []Warning
 	calUpdated  time.Time
 	forceCal    bool // refresh button: fetch calendars too, not just weather
+	wantUpdate  bool // refresh button: also check for a new release right away
 	wifiPinned  bool // switched on by hand: stays up until tapped again
 	skipWake    bool // this tap switched Wi-Fi off; don't let it wake the radio again
 	shownOnline bool // Wi-Fi state in the last drawn frame
@@ -480,6 +481,10 @@ func main() {
 			}
 			if !online() && !a.skipWake {
 				reconnectWifi() // a touch opens a Wi-Fi window (ssh, refresh) without blocking the UI
+			}
+			if a.wantUpdate { // refresh button: don't wait for the 6-hour update check
+				a.wantUpdate, lastUpdateCheck = false, time.Time{}
+				maybeUpdate()
 			}
 		case <-tick.C:
 			if (a.view != "dash" || a.modal != nil) && time.Since(lastTouch) > time.Duration(cfg.IdleBackMin)*time.Minute {

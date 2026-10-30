@@ -21,7 +21,7 @@ var quotes = func() []Quote {
 	for _, l := range strings.Split(quotesTSV, "\n") {
 		f := strings.Split(l, "\t")
 		if len(f) >= 3 && f[0] != "tr" {
-			out = append(out, Quote{f[0], f[1], f[2]})
+			out = append(out, Quote{strings.ReplaceAll(f[0], `\n`, "\n"), f[1], f[2]}) // `\n` = verse line break
 		}
 	}
 	return out

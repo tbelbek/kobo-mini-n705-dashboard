@@ -6,15 +6,15 @@ import (
 	"time"
 )
 
-// Every passage must fit the 3 lines the dashboard reserves for it.
+// Every passage must fit the 4 lines the dashboard reserves for it.
 func TestQuotesFit(t *testing.T) {
 	if len(quotes) == 0 {
 		t.Fatal("no quotes embedded")
 	}
 	for _, q := range quotes {
-		lines := wrap(faceItalic(17), "“"+q.Text+"”", 572)
-		if len(lines) > 3 || strings.HasSuffix(lines[len(lines)-1], "…") {
-			t.Errorf("%d lines (max 3): %s", len(lines), q.Text)
+		lines := wrap(faceItalic(18), "“"+q.Text+"”", 572)
+		if len(lines) > 4 || strings.HasSuffix(lines[len(lines)-1], "…") {
+			t.Errorf("%d lines (max 4): %s", len(lines), q.Text)
 		}
 	}
 }

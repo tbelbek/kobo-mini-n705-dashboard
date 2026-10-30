@@ -18,8 +18,8 @@ import (
 	"github.com/srwiley/rasterx"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
-	"golang.org/x/image/font/gofont/goitalic"
-	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/gofont/gomedium"
+	"golang.org/x/image/font/gofont/gomediumitalic"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
@@ -43,9 +43,9 @@ var gridDays = []string{"Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"}
 // ---------------------------------------------------------------- text
 
 var (
-	fontReg, _  = opentype.Parse(goregular.TTF) // Go fonts cover WGL4, so ş/ğ/İ/ı render
+	fontReg, _  = opentype.Parse(gomedium.TTF) // Medium, not Regular: thin strokes look faint on e-ink; Go fonts cover WGL4 (ş/ğ/İ/ı)
 	fontBold, _ = opentype.Parse(gobold.TTF)
-	fontItal, _ = opentype.Parse(goitalic.TTF)
+	fontItal, _ = opentype.Parse(gomediumitalic.TTF)
 	faceCache   = map[string]font.Face{}
 )
 
@@ -308,7 +308,7 @@ func (a *App) nav(img *image.Gray) {
 	ref := image.Rect(538, 14, 586, 62)
 	box(img, ref, 2, black)
 	icon(img, "refresh", ref.Min.X+9, ref.Min.Y+9, 30)
-	a.tap(ref, func() { a.forceCal = true; a.refresh() })
+	a.tap(ref, func() { a.forceCal, a.wantUpdate = true, true; a.refresh() })
 	x := ref.Min.X - 6
 	wifi := "wifi"
 	a.shownOnline = online()
@@ -345,7 +345,7 @@ func (a *App) footer(img *image.Gray) {
 	if a.wErr != nil {
 		parts = append(parts, "hava alınamadı")
 	}
-	fs := face(false, 14)
+	fs := face(false, 15)
 	s := strings.Join(parts, " · ")
 	text(img, 586-textW(fs, s), 786, s, fs, black)
 }
@@ -407,13 +407,13 @@ func (a *App) drawDash(img *image.Gray) {
 			if len(lbl) >= 16 {
 				lbl = lbl[11:16]
 			}
-			fs := face(false, 16)
+			fs := face(false, 17)
 			text(img, cx-textW(fs, lbl)/2, y+16, lbl, fs, black)
 			icon(img, wcat(at(h.Code, i)), cx-14, y+22, 28)
 			t := fmt.Sprintf("%d°", round(atf(h.Temp, i)))
-			fb := face(true, 18)
-			text(img, cx-textW(fb, t)/2, y+72, t, fb, black)
-			fsm := face(false, 14)
+			fb := face(true, 20)
+			text(img, cx-textW(fb, t)/2, y+73, t, fb, black)
+			fsm := face(false, 15)
 			feel := fmt.Sprintf("his %d°", round(atf(h.Feels, i)))
 			text(img, cx-textW(fsm, feel)/2, y+90, feel, fsm, black)
 			wind := fmt.Sprintf("%s %d", compass(atf(h.WindDir, i)), round(atf(h.Wind, i)))
@@ -432,17 +432,17 @@ func (a *App) drawDash(img *image.Gray) {
 
 	// daily passage: laid out first so the calendar knows where to stop
 	now := clock().In(a.loc)
-	fq := faceItalic(17)
+	fq := faceItalic(18)
 	quoteTop := 758
 	var qLines []string
 	var qAttr string
 	if q, ok := quoteFor(now); ok {
 		qLines = wrap(fq, "“"+q.Text+"”", 572)
-		if len(qLines) > 3 {
-			qLines = qLines[:3]
+		if len(qLines) > 4 { // a verse quatrain needs 4; the calendar above gives way
+			qLines = qLines[:4]
 		}
 		qAttr = "— " + q.Author + ", " + q.Work
-		quoteTop = 744 - 20 - len(qLines)*22
+		quoteTop = 744 - 20 - len(qLines)*23
 	}
 
 	// calendar: today through the end of this week (Sunday, Swedish/ISO weeks)
@@ -484,7 +484,7 @@ func (a *App) drawDash(img *image.Gray) {
 			when = fmt.Sprintf("%s %d %s %s", trDays[d.Weekday()], d.Day(), short(trMonths[d.Month()]), when)
 		}
 		fill(img, image.Rect(14, y, 20, y+34), black)
-		fb, fr := face(true, 19), face(false, 19)
+		fb, fr := face(true, 20), face(false, 20)
 		x := text(img, 30, y+25, when, fb, black) + 10
 		text(img, x, y+25, ellipsis(fr, title(e), 586-x), fr, black)
 		day := d
@@ -498,7 +498,7 @@ func (a *App) drawDash(img *image.Gray) {
 		fill(img, image.Rect(250, quoteTop, 350, quoteTop+1), black) // short rule above the passage
 		qy := quoteTop
 		for _, l := range qLines {
-			qy += 22
+			qy += 23
 			text(img, 14, qy, l, fq, black)
 		}
 		fa := face(false, 14)
@@ -595,23 +595,23 @@ func (a *App) drawModal(img *image.Gray, day time.Time) {
 	y := 84
 	for _, e := range a.cal.Events(day, day, a.loc) {
 		start := y
-		for _, l := range wrap(face(true, 20), evTime(e)+" — "+title(e), 520) {
+		for _, l := range wrap(face(true, 21), evTime(e)+" — "+title(e), 520) {
 			y += 26
-			text(img, 44, y, l, face(true, 20), black)
+			text(img, 44, y, l, face(true, 21), black)
 		}
 		var extra []string
 		if e.Loc != "" {
-			extra = append(extra, wrap(face(false, 18), "Yer: "+e.Loc, 520)...)
+			extra = append(extra, wrap(face(false, 19), "Yer: "+e.Loc, 520)...)
 		}
 		if e.Desc != "" && e.Tag == "cal" { // the holiday feed's text is Google boilerplate
-			extra = append(extra, wrap(face(false, 18), e.Desc, 520)...)
+			extra = append(extra, wrap(face(false, 19), e.Desc, 520)...)
 		}
 		for _, l := range extra {
 			if y > 740 {
 				break
 			}
 			y += 23
-			text(img, 44, y, l, face(false, 18), black)
+			text(img, 44, y, l, face(false, 19), black)
 		}
 		fill(img, image.Rect(32, start+6, 38, y+6), black)
 		y += 18

@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+
+description="InkBox GUI (disabled by kobodash)"
+
+depend() {
+	keyword -prefix -lxc
+}
+
+start() {
+	return 0
+}

@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+
+description="InkBox Power Daemon (disabled: kobodash owns the power button and sleep)"
+
+depend() {
+	keyword -prefix -lxc
+}
+
+start() {
+	return 0
+}

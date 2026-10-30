@@ -1,0 +1,9 @@
+.venv/
+reports/
+kobo/kobodash
+*.img
+*.xz
+*.png
+!docs/img/*.png
+dash.conf
+.DS_Store

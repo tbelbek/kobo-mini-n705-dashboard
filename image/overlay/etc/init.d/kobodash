@@ -1,0 +1,36 @@
+#!/sbin/openrc-run
+
+description="Kobo dashboard: takes over the screen instead of the InkBox GUI"
+
+depend() {
+	after modules_init onboard_mount
+	keyword -prefix -lxc
+}
+
+start() {
+	ebegin "Starting kobodash"
+	# /root is a tmpfs rebuilt every boot, so the ssh key is reinstalled each time
+	# tmpfs comes up 1777; sshd StrictModes rejects keys under a world-writable home
+	chmod 700 /root
+	mkdir -p /root/.ssh
+	cp /opt/kobodash/authorized_keys /root/.ssh/authorized_keys
+	chmod 700 /root/.ssh
+	chmod 600 /root/.ssh/authorized_keys
+	# Rooted InkBox ships root's password as "root" and sshd accepts passwords:
+	# anyone on the Wi-Fi could log in. Make the password unusable ("*", not "!":
+	# OpenSSH treats "!" as a locked account and would refuse keys too).
+	if grep -q '^root:[^*:][^:]*:' /etc/shadow 2>/dev/null; then
+		cp -p /etc/shadow /tmp/shadow
+		sed -i 's/^root:[^:]*:/root:*:/' /tmp/shadow
+		mount --bind /tmp/shadow /etc/shadow
+	fi
+	start-stop-daemon --start --background --make-pidfile --pidfile /run/kobodash.pid \
+		--exec /bin/sh -- /opt/kobodash/run.sh
+	eend $?
+}
+
+stop() {
+	ebegin "Stopping kobodash"
+	start-stop-daemon --stop --pidfile /run/kobodash.pid
+	eend $?
+}

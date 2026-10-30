@@ -1,0 +1,196 @@
+# kobo-mini-n705-dashboard
+
+A fridge-door e-ink dashboard for the **Kobo Mini (model N705)**: weather, official weather warnings and your calendars on a 600×800 screen that sleeps between updates.
+
+It runs as a single Go binary on the Alpine Linux base that [InkBox / Quill OS](https://github.com/Quill-OS/quill) 2.0 ships for this device. InkBox's own GUI is switched off. The Kobo fetches everything itself, no server or browser needed.
+
+| Dashboard | Month | Day |
+|---|---|---|
+| ![dashboard](docs/img/dashboard.png) | ![month](docs/img/month.png) | ![day](docs/img/day.png) |
+
+*(Screenshots use the demo calendar in `docs/demo.ics` and sample warnings. The UI language is Turkish.)*
+
+## What it shows
+
+- Current temperature for two places, with flat icons.
+- An 8-hour strip for the second place: temperature, feels-like, wind direction and speed ([Open-Meteo](https://open-meteo.com), no API key).
+- Official yellow/orange/red warnings from [SMHI](https://www.smhi.se) for a Swedish county, e.g. `SARI UYARI — kuvvetli rüzgar`.
+- Calendar events from today to the end of the week, with the ISO week number. After 12:00 on Sunday it shows the rest of the day plus next week. Sources are your private ICS links plus Swedish public holidays; official red days are shaded.
+- A month view (prev/next/today) and a day pop-up with location and notes. Multi-day events span their days.
+- A top bar with Wi-Fi state (tap to pin it on) and a refresh button. The footer shows today's date in large type, plus the battery level and the next scheduled update.
+- One uplifting passage a day above the footer, each day from a different public-domain novel, translated into Turkish (`kobo/quotes.tsv`).
+
+## Power model
+
+The device is asleep most of the time and the last frame stays on the panel (e-ink needs no power to hold it).
+
+- Every `REFRESH_MIN` (60 by default) the RTC alarm wakes it. It brings Wi-Fi up, fetches the weather (calendars every `CAL_REFRESH_MIN`, 240 by default), redraws and suspends again.
+- The **power button** wakes it for `AWAKE_SEC` (120) of touch use. Pressing it while awake puts it to sleep.
+- Touch can't wake the Mini from suspend: only the keypad and USB are wakeup sources.
+- While awake the CPU uses the `conservative` governor (InkBox pins it at 800 MHz) and Wi-Fi is off unless needed.
+- It never suspends while an ssh session is open or Wi-Fi is pinned on.
+
+Battery life on the 1000 mAh (3.7 Wh) cell is still being measured. A rough estimate is a week or more at hourly updates. Measurements will be added here once there are numbers.
+
+## Before you start
+
+This rewrites the Kobo's internal microSD card. You keep a full backup and can always go back, but you will open the device.
+
+You need:
+
+- A Kobo Mini N705 and a way to open it ([iFixit teardown](https://www.ifixit.com/Guide/Kobo+Mini+Disassembly/110467)). The card sits inside under the back cover.
+- A microSD card reader.
+- macOS or Linux with Docker, Go (the build pins Go 1.23 through `GOTOOLCHAIN`), `xz` and an ssh key.
+- The **InkBox 2.0 image for n705** from [SourceForge](https://sourceforge.net/projects/quill-os/files/n705/): `inkbox-2.0-n705.xz`, sha256 `2e103043cafe391b75d37907c25f5a5d1437f1e630008c612c882d19ff837446`.
+- Your Wi-Fi name and password (2.4 GHz only; the Mini has no 5 GHz radio) and a private ICS link for your calendar.
+
+## Step by step
+
+### 1. Take the card out and back it up
+
+Remove the back cover and the inner cover screws, pull the microSD card and put it in the reader. Find it by size, never by guessing the disk number:
+
+```bash
+diskutil list external physical      # macOS
+lsblk                                # Linux
+```
+
+Back it up, so you can always restore the stock firmware:
+
+```bash
+sudo dd if=/dev/rdiskN of=kobo-mini-backup.img bs=4m      # macOS (Linux: /dev/sdX, bs=4M)
+```
+
+### 2. Build the image
+
+```bash
+WIFI_SSID='YourWifi' WIFI_PSK='your-password' \
+  image/build.sh ~/Downloads/inkbox-2.0-n705.xz kobodash.img
+```
+
+It starts from the stock InkBox image and changes three things. The signed files stay untouched.
+
+1. **Roots the device offline.** It writes `rooted` at sector 79872 and puts the root-compliant kernel (`uImage-root`, taken from the image's own recovery partition) at sector 81920. This is exactly what InkBox's recovery script `restore-root.sh` does. InkBox only accepts both together: one without the other makes it refuse to boot.
+2. **Sets boot flags:** `X11_START=false` (no KoBox) and `RW_ROOTFS=true`.
+3. **Adds files to the overlay.** The root filesystem is a signed squashfs that is verified on every boot, but `rootfs/write/` on partition 3 is the unsigned read-write branch of the unionfs on top of it. Files placed there replace the ones below. The build adds:
+   - stub OpenRC scripts for `inkbox_gui`, `update_inkbox` and `ipd`, so the InkBox GUI and its power daemon stay off;
+   - a `kobodash` service and a symlink that enables `sshd`;
+   - your ssh public key (`PUBKEY`, default `~/.ssh/id_ed25519.pub`);
+   - your Wi-Fi settings.
+
+The script needs Docker for `e2fsprogs` and `squashfs-tools`; it builds the helper image from `image/Dockerfile` the first time. Set `SERVER=http://host:port` if you want the Kobo to report its IP to `web/server.py` on boot.
+
+### 3. Write it to the card
+
+macOS:
+
+```bash
+diskutil unmountDisk /dev/diskN
+sudo dd if=kobodash.img of=/dev/rdiskN bs=4m && sync
+sudo dd if=/dev/rdiskN bs=4m count=922 2>/dev/null | head -c "$(stat -f %z kobodash.img)" | md5     # must match: md5 kobodash.img
+diskutil eject /dev/diskN
+```
+
+Linux:
+
+```bash
+sudo dd if=kobodash.img of=/dev/sdX bs=4M conv=fsync status=progress
+sudo head -c "$(stat -c %s kobodash.img)" /dev/sdX | md5sum      # must match: md5sum kobodash.img
+```
+
+`count=922` is just enough 4 MiB blocks to cover the 3.87 GB image; `head -c` trims the read-back to the exact size. On macOS, run `dd` from your own Terminal. Sandboxed apps can be refused raw disk access even with sudo.
+
+### 4. First boot
+
+Put the card back and power on. After the InkBox boot splash you should see `kobodash`, then `Wi-Fi'ye bağlanıyor…`, then `kobodash hazır — IP: …`. The clock is set over NTP and written to the RTC.
+
+```bash
+ssh root@<kobo-ip>
+```
+
+The first boot can take a few minutes while sshd generates host keys.
+
+Rooted InkBox ships root's password as `root` and its sshd accepts passwords, so anyone on your Wi-Fi could log in. The `kobodash` service blanks root's password on every boot (`*` in `/etc/shadow`, bind-mounted from `/tmp`), so only your key works.
+
+### 5. Install the app
+
+```bash
+mkdir -p ~/.config/kobodash
+cp kobo/dash.conf.example ~/.config/kobodash/dash.conf
+chmod 600 ~/.config/kobodash/dash.conf      # it holds your private ICS link
+$EDITOR ~/.config/kobodash/dash.conf
+kobo/deploy.sh <kobo-ip>
+```
+
+`deploy.sh` cross-compiles for ARMv7, copies the binary and config into the overlay (it mounts partition 3 at `/tmp/p3` on the device) and restarts the app. Changes go live immediately and survive reboots; you never need to reflash for app changes. If the device is asleep, press the power button first.
+
+### 6. Check the touch mapping
+
+The included values (`TOUCH_SWAP=1`, `TOUCH_INVX=1`) are right for the Mini's zForce panel. If taps land in the wrong place, stop the app and run `/opt/kobodash/kobodash -calib`, tap the four corners and read the raw coordinates it prints.
+
+## Updates
+
+A device running a release build updates itself. Every `UPDATE_HOURS` (6), right after a timed refresh while Wi-Fi is up, it asks GitHub for the latest release of `UPDATE_REPO`. If the tag differs from its own version, it downloads `kobodash-armv7` and `kobodash-armv7.sig` and checks the ed25519 signature against the public key compiled into it (`kobo/update.go`, or `UPDATE_PUBKEY`). Only a binary that verifies gets installed. The private key lives on the maintainer's machine and never in the repo, so a compromised GitHub account can't push code to devices.
+
+`supervise.sh` runs the app. The app exits after installing an update and the supervisor starts the new binary. If that binary exits with an error within a minute, the supervisor puts the previous one (`kobodash.prev`) back.
+
+To put a device on the release track, deploy a release build once: `VERSION=v0.1.0 kobo/deploy.sh <ip>`. Builds deployed without `VERSION` report `dev` and never self-update.
+
+To publish a release: `tools/release.sh v0.2.0` builds, signs, tags and uploads it. For your own fork, create a key with `go run ./kobo -genkey ~/.config/kobodash/release.key`, put the printed public key in `kobo/update.go` (or `UPDATE_PUBKEY`), and set `UPDATE_REPO`.
+
+## Daily passages
+
+`kobo/quotes.tsv` holds 95 passages, one per book: Turkish text, author, work, the original English sentence and the Project Gutenberg book number. Every author died before 1955, so the originals are public domain in the US, the EU and Turkey. The translations are new.
+
+The display shows one passage per day, the same one all day. Each year gets its own shuffle, so the order changes every year and nothing repeats until the pool runs out.
+
+How the 95 were chosen: `tools/quote_candidates.py` pulled about 5,500 likely sentences out of the 600 most downloaded public-domain novels on Project Gutenberg. An LLM pass kept at most one joyful, self-contained sentence per book (434), and a stricter editing pass kept only the ones with real meaning and rewrote weak translations (95). `tools/verify_quotes.py` checks that every original appears word for word in its source text, and `go test ./kobo` checks that each one fits the three lines the dashboard gives it.
+
+## Development
+
+```bash
+cd kobo
+GOTOOLCHAIN=go1.23.12 go build -o /tmp/kd .
+/tmp/kd -conf ~/.config/kobodash/dash.conf -once out.png                      # render one frame on your desk
+/tmp/kd -conf ... -once out.png -view month -now 2026-11-02T08:00 -fakewarn   # other view / date / sample warnings
+```
+
+On the device:
+
+| Flag | What it does |
+|---|---|
+| `-calib` | prints raw touch coordinates |
+| `-suspendtest 60` | arms the RTC alarm, suspends, and reports how long it slept |
+| `-version` | prints the build version |
+
+`go test ./kobo` runs the self-update tests against a fake GitHub (good signature installs, wrong key is rejected, same version is left alone).
+
+`web/server.py` is the earlier browser version (stdlib Python, server-rendered HTML). It also serves `/kobo/probe`, a read-only device survey script, and accepts `/kobo/report`. It's a dev tool with no authentication: run it on a trusted LAN only.
+
+## Things we learned the hard way
+
+- **Go version:** the Mini runs kernel 2.6.35. Go 1.24+ needs Linux 3.2, so build with Go 1.23.
+- **RTC wake:** there is no `/sys/class/rtc/rtc0/wakealarm`, so `rtcwake` refuses. Setting the alarm with the `RTC_WKALM_SET` ioctl on `/dev/rtc0` works fine.
+- **Suspend:** use the Kobo sequence, `echo 1 > /sys/power/state-extended`, a short wait, then `echo mem > /sys/power/state`.
+- **Timekeeping:** Go's monotonic clock stops during suspend. Keep wall-clock times (`t.Round(0)`) for anything compared across a sleep, or timer wakes look like button presses.
+- **Overlay path:** the overlay's write branch is not reachable at `/rootfs-part` after `switch_root`. Mount `/dev/mmcblk0p3` yourself.
+- **Touch:** zForce reports in 800×600 landscape. Screen x = 600 − raw y, screen y = raw x.
+- **CPU governor:** there is no `ondemand`; the choices are `conservative`, `powersave`, `userspace` and `performance`.
+- **InkBox's power daemon:** if you keep `ipd`, set `/data/config/20-sleep_daemon/7-idleSleep` to `0` to stop its auto-sleep. kobodash grabs the touch device, so ipd would think the device is idle.
+- **Wi-Fi:** the interface is `eth0`. `toggle.sh off` unloads the driver and cuts its power; `connect_to_network.sh SSID PSK` connects.
+- **debugfs:** `-f cmdfile` must come before the image path. Otherwise it reads commands from stdin, which silently ate the rest of a heredoc script.
+
+## Going back
+
+Write `kobo-mini-backup.img` back to restore the stock Kobo firmware, or the plain InkBox image for stock InkBox.
+
+## Credits
+
+- [InkBox / Quill OS](https://github.com/Quill-OS/quill), whose recovery scripts, init and overlay design made this possible.
+- [FBInk](https://github.com/NiLuJe/FBInk) draws to the panel.
+- Weather from [Open-Meteo](https://open-meteo.com); warnings from [SMHI open data](https://opendata.smhi.se).
+- [Go fonts](https://go.dev/blog/go-fonts) and [oksvg](https://github.com/srwiley/oksvg).
+
+## License
+
+MIT. Use at your own risk: this modifies your device's firmware.

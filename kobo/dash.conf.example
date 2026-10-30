@@ -1,0 +1,41 @@
+# kobodash config: KEY=VALUE, one per line. Copy to ~/.config/kobodash/dash.conf
+# (chmod 600: the ICS link is a secret). deploy.sh installs it as /opt/kobodash/dash.conf.
+
+# Calendars: your private ICS link(s), comma-separated.
+# Google: Calendar settings -> "Secret address in iCal format". iCloud: share -> Public Calendar.
+ICS_URL=https://calendar.google.com/calendar/ical/.../basic.ics
+# Extra read-only feed. Default: Google's Swedish holidays ("Allmän helgdag" = red day, shaded).
+#HOLIDAY_ICS=https://calendar.google.com/calendar/ical/sv.swedish%23holiday%40group.v.calendar.google.com/public/basic.ics
+
+# Display timezone (clock, event times).
+TZ=Europe/Stockholm
+
+# Weather. Place 1: current temperature only. Place 2: also the hourly strip and warnings.
+PLACE=İstanbul
+LAT=41.0082
+LON=28.9784
+TZ1=Europe/Istanbul
+PLACE2=Göteborg
+LAT2=57.7089
+LON2=11.9746
+TZ2=Europe/Stockholm
+# SMHI county for official yellow/orange/red warnings (Sweden only).
+WARN_REGION=Västra Götaland
+
+# Refresh: weather (and wake-up) every N minutes, calendars every M minutes.
+REFRESH_MIN=60
+CAL_REFRESH_MIN=240
+
+# Power: suspend between refreshes; the RTC alarm or the power button wakes it.
+SLEEP=1
+# Stay awake this long after a power-button wake / the last touch.
+AWAKE_SEC=120
+# Keep Wi-Fi up this long after the last touch (ssh window).
+WIFI_IDLE_MIN=10
+#WIFI_ALWAYS=1
+
+# Touch calibration for the Kobo Mini's zForce panel (run `kobodash -calib` to redo it).
+TOUCH_SWAP=1
+TOUCH_INVX=1
+TOUCH_MAXX=600
+TOUCH_MAXY=800

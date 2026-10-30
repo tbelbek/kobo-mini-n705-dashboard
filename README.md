@@ -140,7 +140,7 @@ To publish a release: `tools/release.sh v0.2.0` builds, signs, tags and uploads 
 
 ## Daily passages
 
-`kobo/quotes.tsv` holds 239 passages: 144 sentences from novels, 38 from essays and philosophy (Stevenson, Chesterton, Emerson, Marcus Aurelius and others), 36 extracts from English poems and 21 from Yunus Emre. Religious lines are left out on purpose. Each row has the Turkish text, author, work, the original and its source (a Project Gutenberg book number, or `ws:` for a Turkish Wikisource page). Verse keeps its line breaks, written as `\n`. A novel gives at most one passage and a poetry collection at most three. Every author or translator died before 1955, so the originals are public domain in the US, the EU and Turkey. The English translations into Turkish are new; Yunus Emre is shown as written.
+`kobo/quotes.tsv` holds 220 passages: 144 sentences from novels, 38 from essays and philosophy (Stevenson, Chesterton, Emerson, Marcus Aurelius and others), 34 extracts from English poems and 4 from Yunus Emre. Religious lines, including mystic verse about the love of God, are left out on purpose. Each row has the Turkish text, author, work, the original and its source (a Project Gutenberg book number, or `ws:` for a Turkish Wikisource page). Verse keeps its line breaks, written as `\n`. A novel gives at most one passage and a poetry collection at most three. Every author or translator died before 1955, so the originals are public domain in the US, the EU and Turkey. The English translations into Turkish are new; Yunus Emre is shown as written.
 
 The display shows one passage per day, the same one all day. Each year gets its own shuffle, so the order changes every year and nothing repeats until the pool runs out.
 

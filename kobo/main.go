@@ -173,6 +173,7 @@ type App struct {
 	wifiPinned  bool // switched on by hand: stays up until tapped again
 	skipWake    bool // this tap switched Wi-Fi off; don't let it wake the radio again
 	shownOnline bool // Wi-Fi state in the last drawn frame
+	busy        bool // refresh button pressed, fetch in progress
 }
 
 // toggleWifi: the Wi-Fi icon. Off -> on and pinned; on (pinned or auto) -> off, back to auto.

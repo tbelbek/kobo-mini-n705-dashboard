@@ -306,9 +306,20 @@ func (a *App) nav(img *image.Gray) {
 
 	// right side: Wi-Fi state · last update · refresh now
 	ref := image.Rect(538, 14, 586, 62)
-	box(img, ref, 2, black)
-	icon(img, "refresh", ref.Min.X+9, ref.Min.Y+9, 30)
-	a.tap(ref, func() { a.forceCal, a.wantUpdate = true, true; a.refresh() })
+	if a.busy {
+		fill(img, ref, black) // pressed: instant feedback, the fetch below can take a while
+	} else {
+		box(img, ref, 2, black)
+		icon(img, "refresh", ref.Min.X+9, ref.Min.Y+9, 30)
+	}
+	// touch target reaches the screen edges: the panel reads corner taps a few px off
+	a.tap(image.Rect(530, 0, W, 80), func() {
+		a.busy = true
+		a.show()
+		a.forceCal, a.wantUpdate = true, true
+		a.refresh()
+		a.busy = false
+	})
 	x := ref.Min.X - 6
 	wifi := "wifi"
 	a.shownOnline = online()
@@ -320,7 +331,7 @@ func (a *App) nav(img *image.Gray) {
 		box(img, wr, 2, black) // framed = switched on by hand
 	}
 	icon(img, wifi, x-38, 24, 28)
-	a.tap(wr, a.toggleWifi)
+	a.tap(image.Rect(wr.Min.X-8, 0, 530, 80), a.toggleWifi)
 }
 
 func (a *App) footer(img *image.Gray) {

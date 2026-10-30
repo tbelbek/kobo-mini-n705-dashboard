@@ -1,24 +1,28 @@
 # kobo-mini-n705-dashboard
 
-A fridge-door e-ink dashboard for the **Kobo Mini (model N705)**: weather, official weather warnings and your calendars on a 600×800 screen that sleeps between updates.
+A fridge-door e-ink dashboard for the **Kobo Mini (model N705)**: weather, official weather warnings and your calendars on the 800×600 screen, hung in landscape, that sleeps between updates.
 
 It runs as a single Go binary on the Alpine Linux base that [InkBox / Quill OS](https://github.com/Quill-OS/quill) 2.0 ships for this device. InkBox's own GUI is switched off. The Kobo fetches everything itself, no server or browser needed.
 
-| Dashboard | Month | Day |
-|---|---|---|
-| ![dashboard](docs/img/dashboard.png) | ![month](docs/img/month.png) | ![day](docs/img/day.png) |
+| Dashboard | Calendar |
+|---|---|
+| ![dashboard](docs/img/dashboard.png) | ![calendar](docs/img/month.png) |
 
 *(Screenshots use the demo calendar in `docs/demo.ics` and sample warnings. The UI language is Turkish.)*
 
 ## What it shows
 
-- Current temperature for two places, with flat icons.
-- An 8-hour strip for the second place: temperature, feels-like, wind direction and speed ([Open-Meteo](https://open-meteo.com), no API key).
+- A left rail with the current weather for two places: the home city in 140 px type (readable from across the kitchen), with feels-like and wind.
+- The next 5 hours for the home city: temperature, feels-like, wind direction and speed ([Open-Meteo](https://open-meteo.com), no API key).
 - Official yellow/orange/red warnings from [SMHI](https://www.smhi.se) for a Swedish county, e.g. `SARI UYARI — kuvvetli rüzgar`.
 - Calendar events from today to the end of the week, with the ISO week number. After 12:00 on Sunday it shows the rest of the day plus next week. Sources are your private ICS links plus Swedish public holidays; official red days are shaded.
-- A month view (prev/next/today) and a day pop-up with location and notes. Multi-day events span their days.
-- A top bar with Wi-Fi state (tap to pin it on) and a refresh button that also checks for a new release. The footer shows today's date in large type, plus the battery level and the next scheduled update.
-- One uplifting passage a day above the footer: prose from public-domain novels and essays, and verse from public-domain poets, in Turkish (`kobo/quotes.tsv`).
+- A calendar view: the month as a grid of dates with one mark per event (red days shaded, today ringed), and a side panel with the chosen day's events in full: time, title, place and notes. Multi-day events span their days.
+- A top bar with today's date and ISO week (`30 Ekim, Cuma · W44`), the next scheduled update and battery level, Wi-Fi state (tap to pin it on) and a refresh button that also checks for a new release.
+- One uplifting passage a day in a band along the bottom: prose from public-domain novels and essays, and verse from public-domain poets, in Turkish (`kobo/quotes.tsv`).
+
+### Why it looks like this
+
+Type sizes come from viewing distance, not taste. At 200 ppi one pixel is 0.127 mm and Go's capitals are 0.72 of the font size. ISO 9241-303 asks for at least 16 arcminutes of character height, so a temperature read from 2 m needs a font of about 102 px (the home city uses 140) and numbers read from 1 m need 52 px. Everything else is meant for reading up close at 24 px, and status text at 18. The layout follows what the best e-ink dashboards share (TRMNL, Petroff's Kindle weather display, MagInkCal): one dominant number, bands separated by rules, a capped list with "+N more", pure black on white. Go Medium/Bold beat Atkinson Hyperlegible Next and Fira Sans here because they have the largest capitals per pixel; the original Atkinson Hyperlegible has no Turkish İ.
 
 ## Power model
 
@@ -127,6 +131,8 @@ kobo/deploy.sh <kobo-ip>
 ### 6. Check the touch mapping
 
 The included values (`TOUCH_SWAP=1`, `TOUCH_INVX=1`) are right for the Mini's zForce panel. If taps land in the wrong place, stop the app and run `/opt/kobodash/kobodash -calib`, tap the four corners and read the raw coordinates it prints.
+
+The picture is drawn in landscape and turned a quarter turn onto the portrait panel. `ROTATE=cw` (default) suits the reader hung with its power button on the left; if the screen is upside down, set `ROTATE=ccw`. Taps are turned the same way, so calibration does not change.
 
 ## Updates
 

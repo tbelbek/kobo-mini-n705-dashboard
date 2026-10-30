@@ -1,6 +1,6 @@
 package main
 
-// Screen side: draws the dashboard, the month view and the day modal into a
+// Screen side: draws the dashboard and the month view into a
 // 600x800 grayscale image, and records tap targets (hits) while drawing.
 
 import (
@@ -24,7 +24,10 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-const W, H = 600, 800
+const (
+	W, H   = 800, 600 // logical canvas: the reader hangs in landscape
+	PW, PH = 600, 800 // the panel itself (framebuffer and touch), portrait
+)
 
 var clock = time.Now // overridable with -now for desk renders
 
@@ -67,16 +70,6 @@ func text(dst draw.Image, x, baseline int, s string, f font.Face, c color.Color)
 	d := &font.Drawer{Dst: dst, Src: image.NewUniform(c), Face: f, Dot: fixed.P(x, baseline)}
 	d.DrawString(s)
 	return d.Dot.X.Round()
-}
-
-func faceItalic(size float64) font.Face {
-	key := fmt.Sprint("italic", size)
-	if f, ok := faceCache[key]; ok {
-		return f
-	}
-	f, _ := opentype.NewFace(fontItal, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
-	faceCache[key] = f
-	return f
 }
 
 func textW(f font.Face, s string) int { return font.MeasureString(f, s).Round() }
@@ -166,6 +159,7 @@ var icons = map[string]string{
 	"wifi":  wifiArcs,
 	"wifi-off": wifiArcs + `<path d="M3 3L21 21" stroke="#fff" stroke-width="5" stroke-linecap="round"/>` +
 		`<path d="M3 3L21 21" stroke="#000" stroke-width="2.6" stroke-linecap="round"/>`,
+	"warn": `<path d="M12 2.5L22.5 21h-21z" fill="none" stroke="#000" stroke-width="2.4" stroke-linejoin="round"/><path d="M12 9v6" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="18.2" r="1.5"/>`,
 	"refresh": `<path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/>` +
 		`<polygon points="21,2.5 21,10 13.5,10"/>`,
 }
@@ -235,28 +229,12 @@ func evTime(e Event) string {
 	return e.Start.Format("15:04")
 }
 
-func title(e Event) string {
-	if e.Tag == "red" {
-		return e.Summary + " (kırmızı gün)"
-	}
-	return e.Summary
-}
-
-func cellLabel(e Event, day time.Time) string {
-	if !e.AllDay && day.Equal(e.Day()) {
-		return e.Start.Format("15:04") + " " + e.Summary
-	}
-	return e.Summary // red days are marked by the shaded cell
-}
-
-func dayLabel(d time.Time) string {
-	return fmt.Sprintf("%d %s %s", d.Day(), trMonths[d.Month()], trDays[d.Weekday()])
-}
+var fakeBattery = "" // set by -fakewarn for desk renders
 
 func battery() string {
 	b, err := os.ReadFile("/sys/class/power_supply/mc13892_bat/capacity")
 	if err != nil {
-		return ""
+		return fakeBattery
 	}
 	return "pil %" + strings.TrimSpace(string(b))
 }
@@ -275,8 +253,6 @@ func (a *App) render() *image.Gray {
 	fill(img, img.Bounds(), white)
 	a.hits = nil
 	switch {
-	case a.modal != nil:
-		a.drawModal(img, *a.modal)
 	case a.view == "month":
 		a.drawMonth(img)
 	default:
@@ -285,8 +261,32 @@ func (a *App) render() *image.Gray {
 	return img
 }
 
+// panelFrame turns the landscape canvas into the portrait framebuffer the panel expects.
+// "cw" rotates it a quarter turn clockwise, "ccw" the other way (which one depends on how
+// the reader hangs on the fridge); toLogical is the inverse for taps.
+func panelFrame(src *image.Gray, rot string) *image.Gray {
+	dst := image.NewGray(image.Rect(0, 0, PW, PH))
+	for ly := 0; ly < H; ly++ {
+		for lx := 0; lx < W; lx++ {
+			px, py := H-1-ly, lx
+			if rot == "ccw" {
+				px, py = ly, W-1-lx
+			}
+			dst.Pix[py*dst.Stride+px] = src.Pix[ly*src.Stride+lx]
+		}
+	}
+	return dst
+}
+
+func toLogical(p image.Point, rot string) image.Point {
+	if rot == "ccw" {
+		return image.Pt(W-1-p.Y, p.X)
+	}
+	return image.Pt(p.Y, H-1-p.X)
+}
+
 func (a *App) button(img *image.Gray, r image.Rectangle, label string, active bool, fn func()) {
-	f := face(false, 22)
+	f := face(false, tSmall)
 	fg := color.Color(black)
 	if active {
 		fill(img, r, black)
@@ -298,67 +298,74 @@ func (a *App) button(img *image.Gray, r image.Rectangle, label string, active bo
 	a.tap(r, fn)
 }
 
+// nav is the header every view shares: tabs · date + ISO week · next update/battery, Wi-Fi, refresh.
 func (a *App) nav(img *image.Gray) {
-	a.button(img, image.Rect(14, 14, 114, 62), "Pano", a.view == "dash", func() { a.view = "dash" })
-	a.button(img, image.Rect(124, 14, 244, 62), "Takvim", a.view == "month", func() {
-		a.view, a.month = "month", firstOfMonth(clock().In(a.loc))
-	})
+	now := clock().In(a.loc)
+	a.button(img, image.Rect(mx, 4, 104, 52), "Pano", a.view != "month", func() { a.view = "dash" })
+	a.button(img, image.Rect(112, 4, 216, 52), "Takvim", a.view == "month", func() { a.openDay(midnight(now, a.loc)) })
 
-	// right side: Wi-Fi state · last update · refresh now
-	ref := image.Rect(538, 14, 586, 62)
+	ref := image.Rect(W-64, 4, W-mx, 52)
 	if a.busy {
 		fill(img, ref, black) // pressed: instant feedback, the fetch below can take a while
 	} else {
 		box(img, ref, 2, black)
 		icon(img, "refresh", ref.Min.X+9, ref.Min.Y+9, 30)
 	}
-	// touch target reaches the screen edges: the panel reads corner taps a few px off
-	a.tap(image.Rect(530, 0, W, 80), func() {
+	// touch targets reach the screen edge: the panel reads edge taps a few px off
+	a.tap(image.Rect(W-72, 0, W, 64), func() {
 		a.busy = true
 		a.show()
 		a.forceCal, a.wantUpdate = true, true
 		a.refresh()
 		a.busy = false
 	})
-	x := ref.Min.X - 6
+	wr := image.Rect(W-120, 4, W-72, 52)
 	wifi := "wifi"
 	a.shownOnline = online()
 	if !a.shownOnline {
 		wifi = "wifi-off"
 	}
-	wr := image.Rect(x-44, 14, x-4, 62)
 	if a.wifiPinned {
 		box(img, wr, 2, black) // framed = switched on by hand
 	}
-	icon(img, wifi, x-38, 24, 28)
-	a.tap(image.Rect(wr.Min.X-8, 0, 530, 80), a.toggleWifi)
-}
+	icon(img, wifi, wr.Min.X+10, 14, 28)
+	a.tap(image.Rect(wr.Min.X-8, 0, W-72, 64), a.toggleWifi)
 
-func (a *App) footer(img *image.Gray) {
-	fill(img, image.Rect(14, 758, 586, 760), black)
-	// big date on the left; no clock time, it would sit frozen on the panel while asleep
-	now := clock().In(a.loc)
-	text(img, 14, 788, fmt.Sprintf("%d %s %d, %s", now.Day(), trMonths[now.Month()], now.Year(), trDaysLong[now.Weekday()]),
-		face(true, 24), black)
-
-	// small status on the right
+	// next update and battery: small, stacked, left of the Wi-Fi icon
 	var parts []string
-	if b := battery(); b != "" {
-		parts = append(parts, b)
-	}
 	next := a.nextWake // set when going to sleep; while awake, derive it from the last refresh
 	if next.Before(a.updated) {
 		next = a.updated.Add(time.Duration(a.cfg.RefreshMin) * time.Minute)
 	}
 	if a.cfg.Sleep && next.After(clock()) {
-		parts = append(parts, "sonraki güncelleme "+next.In(a.loc).Format("15:04"))
+		parts = append(parts, next.In(a.loc).Format("15:04"))
 	}
-	if a.wErr != nil {
-		parts = append(parts, "hava alınamadı")
+	if b := battery(); b != "" {
+		parts = append(parts, b)
 	}
-	fs := face(false, 15)
-	s := strings.Join(parts, " · ")
-	text(img, 586-textW(fs, s), 786, s, fs, black)
+	fs, stW := face(false, tTiny), 0
+	for i, p := range parts[:min(len(parts), 2)] {
+		text(img, wr.Min.X-8-textW(fs, p), 24+i*21, p, fs, black)
+		stW = max(stW, textW(fs, p))
+	}
+
+	// date without the year, ISO week as "W44" (Sunday afternoon the calendar already shows next week)
+	_, week := now.ISOWeek()
+	wk := fmt.Sprintf("  ·  W%d", week)
+	if now.Weekday() == time.Sunday && now.Hour() >= 12 {
+		_, nw := now.AddDate(0, 0, 7).ISOWeek()
+		wk = fmt.Sprintf("  ·  W%d+%d", week, nw)
+	}
+	date := fmt.Sprintf("%d %s, %s", now.Day(), trMonths[now.Month()], trDaysLong[now.Weekday()])
+	room := wr.Min.X - 8 - stW - 16 - 232
+	for _, sz := range []float64{28, 26, 24, 22} {
+		if fb, fr := face(true, sz), face(false, sz); textW(fb, date)+textW(fr, wk) <= room {
+			x := text(img, 232, 39, date, fb, black)
+			text(img, x, 39, wk, fr, black)
+			break
+		}
+	}
+	fill(img, image.Rect(0, 56, W, 58), black)
 }
 
 func firstOfMonth(t time.Time) time.Time {
@@ -367,123 +374,135 @@ func firstOfMonth(t time.Time) time.Time {
 
 func round(v float64) int { return int(math.Round(v)) }
 
-func (a *App) drawDash(img *image.Gray) {
-	a.nav(img)
-	y := 78
+func centerText(img *image.Gray, s string, f font.Face, cx, base int) {
+	text(img, cx-textW(f, s)/2, base, s, f, black)
+}
 
-	// glance: each city with icon + current degree
-	if a.wGlance != nil && a.wDetail != nil {
-		fb := face(true, 28)
-		type seg struct {
-			s    string
-			icon string
-		}
-		segs := []seg{{a.cfg.Places[0].Name + " ", ""}, {"", wcat(a.wGlance.Current.Code)},
-			{fmt.Sprintf(" %d°", round(a.wGlance.Current.Temp)), ""}, {"   ·   ", ""},
-			{a.cfg.Places[1].Name + " ", ""}, {"", wcat(a.wDetail.Current.Code)},
-			{fmt.Sprintf(" %d°", round(a.wDetail.Current.Temp)), ""}}
-		total := 0
-		for _, s := range segs {
-			if s.icon != "" {
-				total += 34
-			} else {
-				total += textW(fb, s.s)
-			}
-		}
-		x := (W - total) / 2
-		for _, s := range segs {
-			if s.icon != "" {
-				icon(img, s.icon, x, y+6, 34)
-				x += 34
-			} else {
-				x = text(img, x, y+34, s.s, fb, black)
-			}
-		}
-	} else {
-		text(img, 14, y+34, "Hava durumu alınamadı", face(true, 24), black)
+func hourLabel(h string) string {
+	if len(h) >= 16 {
+		return h[11:16]
 	}
-	y += 62
+	return h
+}
 
-	// hourly strip
-	if a.wDetail != nil {
-		h := a.wDetail.Hourly
-		n := len(h.Time)
-		if n > 8 {
-			n = 8
-		}
-		cw := 572 / 8
-		for i := 0; i < n; i++ {
-			cx := 14 + i*cw + cw/2
-			lbl := h.Time[i]
-			if len(lbl) >= 16 {
-				lbl = lbl[11:16]
-			}
-			fs := face(false, 17)
-			text(img, cx-textW(fs, lbl)/2, y+16, lbl, fs, black)
-			icon(img, wcat(at(h.Code, i)), cx-14, y+22, 28)
-			t := fmt.Sprintf("%d°", round(atf(h.Temp, i)))
-			fb := face(true, 20)
-			text(img, cx-textW(fb, t)/2, y+73, t, fb, black)
-			fsm := face(false, 15)
-			feel := fmt.Sprintf("his %d°", round(atf(h.Feels, i)))
-			text(img, cx-textW(fsm, feel)/2, y+90, feel, fsm, black)
-			wind := fmt.Sprintf("%s %d", compass(atf(h.WindDir, i)), round(atf(h.Wind, i)))
-			text(img, cx-textW(fsm, wind)/2, y+107, wind, fsm, black)
-		}
-		text(img, 586-textW(face(false, 12), "rüzgar km/s"), y+122, "rüzgar km/s", face(false, 12), black)
-		y += 130
-	}
-	// official SMHI warnings: "SARI UYARI — kuvvetli rüzgar"
-	for _, w := range a.warnings {
-		fill(img, image.Rect(14, y, 586, y+38), black)
-		f := face(true, 19)
-		text(img, 24, y+26, ellipsis(f, warnLabel[w.Level]+" — "+w.Text, 552), f, white)
-		y += 46
-	}
-
-	// daily passage: laid out first so the calendar knows where to stop
-	now := clock().In(a.loc)
-	fq := faceItalic(18)
-	quoteTop := 758
-	var qLines []string
-	var qAttr string
-	if q, ok := quoteFor(now); ok {
-		qLines = wrap(fq, "“"+q.Text+"”", 572)
-		if len(qLines) > 4 { // a verse quatrain needs 4; the calendar above gives way
-			qLines = qLines[:4]
-		}
-		qAttr = "— " + q.Author + ", " + q.Work
-		quoteTop = 744 - 20 - len(qLines)*23
-	}
-
-	// calendar: today through the end of this week (Sunday, Swedish/ISO weeks)
-	y += 6
-	today := midnight(now, a.loc)
-	_, week := today.ISOWeek()
-	end := today.AddDate(0, 0, (7-int(today.Weekday()))%7) // this Sunday
-	head := fmt.Sprintf("Takvim · Hafta %d", week)
-	sundayPM := today.Weekday() == time.Sunday && now.Hour() >= 12
-	if sundayPM { // the week is nearly over: rest of today + all of next week
+// weekEvents: today through Sunday (Sunday afternoon: through next Sunday); today's past timed events dropped.
+func (a *App) weekEvents(now time.Time) (today time.Time, evs []Event) {
+	today = midnight(now, a.loc)
+	end := today.AddDate(0, 0, (7-int(today.Weekday()))%7)
+	if today.Weekday() == time.Sunday && now.Hour() >= 12 {
 		end = today.AddDate(0, 0, 7)
-		_, next := end.ISOWeek()
-		head = fmt.Sprintf("Takvim · Hafta %d + %d", week, next)
 	}
-	text(img, 14, y+24, head, face(true, 23), black)
-	fill(img, image.Rect(14, y+32, 586, y+34), black)
-	y += 46
-	var evs []Event
 	for _, e := range a.cal.Events(today, end, a.loc) {
-		if sundayPM && !e.AllDay && !e.Multi() && e.Day().Equal(today) && e.Start.Before(now) {
-			continue // already happened today
+		if !e.AllDay && !e.Multi() && e.Day().Equal(today) && e.Start.Before(now) {
+			continue
 		}
 		evs = append(evs, e)
 	}
-	if len(evs) == 0 {
-		text(img, 14, y+22, "Bu hafta başka etkinlik yok.", face(false, 19), black)
+	return today, evs
+}
+
+// Layout for a fridge in landscape, sized by viewing distance (1 px = 0.127 mm, Go cap height = 0.72 em):
+//
+//	hero  140 px  Göteborg now, read from 2 m (cap 101 px = 22 arcmin; ISO 9241-303 min 16', preferred 20-22')
+//	large  52 px  temperatures, read from 1 m (cap 37 px = 16')
+//	mid    30 px  titles, city names: 1 m at road-sign legibility (cap 22 px)
+//	small  24 px  details and the passage, read up close
+//	tiny   18 px  status
+const (
+	mx                                 = 16 // side margin
+	rail                               = 262
+	tHero, tLarge, tMid, tSmall, tTiny = 140, 52, 30, 24, 18
+	quoteLH                            = 27
+)
+
+// quoteFace is shared with the fit test: upright, not italic, reads better from a step away.
+func quoteFace() font.Face { return face(false, tSmall) }
+
+// drawDash: header; left rail with both cities; right pane with the next 5 hours over warnings
+// and this week's events; a bottom band as tall as today's passage.
+func (a *App) drawDash(img *image.Gray) {
+	a.nav(img)
+	small, tiny := face(false, tSmall), face(false, tTiny)
+	now := clock().In(a.loc)
+
+	q, hasQ := quoteFor(now)
+	var qLines []string
+	attr, own := "", 0
+	if hasQ {
+		qLines = wrap(quoteFace(), "“"+q.Text+"”", W-2*mx)
+		qLines = qLines[:min(4, len(qLines))]
+		// attribution shares the last line when it fits, else gets its own row; all ends at y=588
+		attr = ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx)
+		if textW(small, qLines[len(qLines)-1])+textW(tiny, attr)+24 > W-2*mx {
+			own = 22
+		}
 	}
+	band := 588 - len(qLines)*quoteLH - own - 2
+	fill(img, image.Rect(rail, 58, rail+2, band), black)
+
+	// rail: Göteborg huge with its icon right beside the number, İstanbul below
+	if a.wDetail != nil && a.wGlance != nil {
+		g, h := a.wDetail.Current, a.wDetail.Hourly
+		text(img, mx, 94, a.cfg.Places[1].Name, face(true, tMid), black)
+		t := fmt.Sprintf("%d°", round(g.Temp))
+		hf := face(true, tHero)
+		for _, sz := range []float64{tHero, 120, 104} { // "-12°" is wider than "8°"; the icon must stay in the rail
+			if hf = face(true, sz); 10+textW(hf, t)+4+64 <= rail-8 {
+				break
+			}
+		}
+		x := text(img, 10, 234, t, hf, black)
+		icon(img, wcat(g.Code), x+4, 128, 64)
+		text(img, mx, 274, fmt.Sprintf("his %d°", round(atf(h.Feels, 0))), small, black)
+		text(img, mx, 304, fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0))), small, black)
+		if a.wErr != nil && !a.weatherAt.IsZero() { // last fetch failed: say how old these numbers are
+			s := "veri " + a.weatherAt.In(a.loc).Format("15:04")
+			text(img, rail-12-textW(small, s), 274, s, small, black)
+		}
+		fill(img, image.Rect(mx, 326, rail-mx, 328), black)
+		text(img, mx, 366, a.cfg.Places[0].Name, face(true, tMid), black)
+		x = text(img, 12, 442, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
+		icon(img, wcat(a.wGlance.Current.Code), x+8, 394, 48)
+
+		// right pane, top: next 5 hours
+		px0 := rail + 18
+		cw := (W - mx - px0) / 5
+		for i := 1; i <= 5 && i < len(h.Time); i++ {
+			cx := px0 + (i-1)*cw + cw/2
+			centerText(img, hourLabel(h.Time[i]), small, cx, 86)
+			icon(img, wcat(at(h.Code, i)), cx-24, 92, 48)
+			centerText(img, fmt.Sprintf("%d°", round(atf(h.Temp, i))), face(true, tLarge), cx, 186)
+			centerText(img, fmt.Sprintf("his %d°", round(atf(h.Feels, i))), small, cx, 214)
+			centerText(img, fmt.Sprintf("%s %d", compass(atf(h.WindDir, i)), round(atf(h.Wind, i))), small, cx, 240)
+		}
+	} else {
+		for i, l := range wrap(face(true, tMid), "Hava durumu alınamadı", rail-2*mx) {
+			text(img, mx, 110+i*36, l, face(true, tMid), black)
+		}
+	}
+	px0 := rail + 18
+	fill(img, image.Rect(px0, 252, W-mx, 254), black)
+
+	// right pane, below: official SMHI warnings, then this week's events
+	y := 260
+	for _, w := range a.warnings {
+		icon(img, "warn", px0, y+6, 28)
+		x := text(img, px0+38, y+28, warnLabel[w.Level], face(true, tSmall), black)
+		text(img, x+10, y+28, ellipsis(small, w.Text, W-mx-x-10), small, black)
+		y += 40
+	}
+	today, evs := a.weekEvents(now)
+	const tall, flat, moreH = 66, 44, 30
+	limit := band - 6 // keep text off the band rule
+	row := tall       // two-line rows when they all fit, otherwise one line each
+	if y+len(evs)*tall > limit {
+		row = flat
+	}
+	title := face(true, tMid)
 	for i, e := range evs {
-		if y > quoteTop-84 && len(evs)-i > 1 {
-			text(img, 30, y+25, fmt.Sprintf("+%d etkinlik daha", len(evs)-i), face(false, 19), black)
+		if y+row > limit || i < len(evs)-1 && y+row+moreH > limit {
+			text(img, px0+16, y+22, fmt.Sprintf("+%d etkinlik daha", len(evs)-i), face(false, 20), black)
+			a.tap(image.Rect(px0, y, W, y+48), func() { a.openDay(today) })
 			break
 		}
 		d := e.Day()
@@ -491,45 +510,74 @@ func (a *App) drawDash(img *image.Gray) {
 			d = today // ongoing multi-day event
 		}
 		when := evTime(e)
-		if !e.Multi() {
-			when = fmt.Sprintf("%s %d %s %s", trDays[d.Weekday()], d.Day(), short(trMonths[d.Month()]), when)
+		if row == tall {
+			if !e.Multi() {
+				when = fmt.Sprintf("%s %d %s · %s", trDays[d.Weekday()], d.Day(), trMonths[d.Month()], when)
+			}
+			if e.Tag == "red" {
+				when += " · RESMİ TATİL"
+			}
+			fill(img, image.Rect(px0, y+4, px0+5, y+row-10), black)
+			text(img, px0+16, y+22, ellipsis(small, when, W-mx-px0-16), small, black)
+			text(img, px0+16, y+54, ellipsis(title, e.Summary, W-mx-px0-16), title, black)
+		} else {
+			if !e.Multi() {
+				when = fmt.Sprintf("%s %d · %s", trDays[d.Weekday()], d.Day(), when)
+			}
+			if e.Tag == "red" {
+				when += " · tatil"
+			}
+			fill(img, image.Rect(px0, y+6, px0+5, y+row-6), black)
+			wx := W - mx - textW(small, when)
+			text(img, px0+16, y+32, ellipsis(title, e.Summary, wx-px0-28), title, black) // title first, day/time right
+			text(img, wx, y+32, when, small, black)
 		}
-		fill(img, image.Rect(14, y, 20, y+34), black)
-		fb, fr := face(true, 20), face(false, 20)
-		x := text(img, 30, y+25, when, fb, black) + 10
-		text(img, x, y+25, ellipsis(fr, title(e), 586-x), fr, black)
 		day := d
-		a.tap(image.Rect(14, y, 586, y+38), func() {
-			a.view, a.month, a.modal = "month", firstOfMonth(day), &day
-		})
-		y += 42
+		a.tap(image.Rect(px0, y, W, y+row), func() { a.openDay(day) })
+		y += row
+	}
+	if len(evs) == 0 {
+		text(img, px0, y+30, "Bu hafta başka etkinlik yok", small, black)
 	}
 
-	if qLines != nil {
-		fill(img, image.Rect(250, quoteTop, 350, quoteTop+1), black) // short rule above the passage
-		qy := quoteTop
-		for _, l := range qLines {
-			qy += 23
-			text(img, 14, qy, l, fq, black)
-		}
-		fa := face(false, 14)
-		text(img, 586-textW(fa, qAttr), qy+20, ellipsis(fa, qAttr, 572), fa, black)
+	// bottom band: the passage (24 px, up to 4 lines)
+	fill(img, image.Rect(mx, band, W-mx, band+2), black)
+	qy := band + 2
+	for _, l := range qLines {
+		qy += quoteLH
+		text(img, mx, qy, l, quoteFace(), black)
 	}
-	a.footer(img)
+	if hasQ {
+		text(img, W-mx-textW(tiny, attr), qy+own, attr, tiny, black)
+	}
 }
 
+// openDay shows d's month with d selected (header tab, a home-screen event, a grid tap).
+func (a *App) openDay(d time.Time) { a.view, a.month, a.sel, a.page = "month", firstOfMonth(d), d, 0 }
+
+// drawMonth: the month as a grid of dates with activity marks (no titles: they would be
+// unreadably small), and a panel with the selected day's events in full.
 func (a *App) drawMonth(img *image.Gray) {
 	a.nav(img)
-	now := clock().In(a.loc)
-	a.button(img, image.Rect(14, 72, 154, 116), "< Önceki", false, func() { a.month = a.month.AddDate(0, -1, 0) })
-	a.button(img, image.Rect(164, 72, 264, 116), "Bugün", false, func() { a.month = firstOfMonth(now) })
-	a.button(img, image.Rect(274, 72, 414, 116), "Sonraki >", false, func() { a.month = a.month.AddDate(0, 1, 0) })
-
+	today := midnight(clock().In(a.loc), a.loc)
 	first := a.month
-	text(img, 14, 158, fmt.Sprintf("%s %d", trMonths[first.Month()], first.Year()), face(true, 30), black)
-	fill(img, image.Rect(14, 168, 586, 171), black)
-
 	next := first.AddDate(0, 1, 0)
+	if a.sel.Before(first) || !a.sel.Before(next) {
+		a.sel, a.page = first, 0
+	}
+
+	// month navigation
+	big, mid, small, tiny := face(false, tLarge), face(true, tMid), face(false, tSmall), face(true, tTiny)
+	arrow := func(r image.Rectangle, s string, fn func()) {
+		centerText(img, s, big, r.Min.X+r.Dx()/2, r.Min.Y+40)
+		a.tap(r, fn)
+	}
+	arrow(image.Rect(mx, 62, 68, 114), "‹", func() { a.openDay(first.AddDate(0, -1, 0)) })
+	centerText(img, fmt.Sprintf("%s %d", trMonths[first.Month()], first.Year()), mid, 184, 98)
+	arrow(image.Rect(300, 62, 352, 114), "›", func() { a.openDay(next) })
+	a.button(img, image.Rect(362, 66, 464, 110), "Bugün", false, func() { a.openDay(today) })
+
+	// grid, Monday first
 	byDay := map[time.Time][]Event{}
 	for _, e := range a.cal.Events(first, next.AddDate(0, 0, -1), a.loc) {
 		for d := e.Day(); !d.After(e.Last); d = d.AddDate(0, 0, 1) {
@@ -538,96 +586,135 @@ func (a *App) drawMonth(img *image.Gray) {
 			}
 		}
 	}
-
-	x0, cw, top := 14, 82, 180
-	fill(img, image.Rect(x0, top, x0+7*cw, top+34), black)
+	const x0, cw, top = mx, 64, 160
 	for i, dn := range gridDays {
-		f := face(true, 17)
-		text(img, x0+i*cw+(cw-textW(f, dn))/2, top+23, dn, f, white)
+		centerText(img, dn, tiny, x0+i*cw+cw/2, 148)
 	}
 	offset := (int(first.Weekday()) + 6) % 7
 	days := daysBetween(first, next)
 	rows := (offset + days + 6) / 7
-	ch := (752 - (top + 34)) / rows
-	if ch > 100 {
-		ch = 100
-	}
-	today := midnight(now, a.loc)
+	ch := min(86, (H-8-top)/rows) // 5 rows: 86 px, 6 rows: 72 px
+	fb := face(true, tSmall)
 	for i := 0; i < rows*7; i++ {
-		cx, cy := x0+(i%7)*cw, top+34+(i/7)*ch
-		r := image.Rect(cx, cy, cx+cw+2, cy+ch+2)
+		cx, cy := x0+(i%7)*cw, top+(i/7)*ch
+		r := image.Rect(cx, cy, cx+cw, cy+ch)
+		box(img, image.Rect(cx, cy, cx+cw+1, cy+ch+1), 1, black)
 		dayN := i - offset + 1
 		if dayN < 1 || dayN > days {
-			box(img, r, 2, black)
 			continue
 		}
 		d := first.AddDate(0, 0, dayN-1)
 		evs := byDay[d]
 		for _, e := range evs {
-			if e.Tag == "red" {
-				fill(img, r, shade)
+			if e.Tag == "red" { // e-ink can't do red: shade the cell
+				fill(img, image.Rect(cx+1, cy+1, cx+cw, cy+ch), shade)
 				break
 			}
 		}
-		box(img, r, 2, black)
 		num := fmt.Sprint(dayN)
-		fb := face(true, 20)
-		if d.Equal(today) {
-			disc(img, cx+19, cy+18, 15, black)
-			text(img, cx+19-textW(fb, num)/2, cy+25, num, fb, white)
-		} else {
-			text(img, cx+6, cy+23, num, fb, black)
+		if d.Equal(today) { // ring around today's number
+			disc(img, cx+cw/2, cy+21, 18, black)
+			disc(img, cx+cw/2, cy+21, 15, white)
 		}
-		fs := face(false, 14)
-		ly := cy + 42
-		for j, e := range evs {
-			if j == 2 {
-				text(img, cx+8, ly, fmt.Sprintf("+%d", len(evs)-2), fs, black)
-				break
+		centerText(img, num, fb, cx+cw/2, cy+30)
+		if n := len(evs); n > 4 {
+			centerText(img, "5+", tiny, cx+cw/2, cy+ch-10)
+		} else if n > 0 { // one bar per event
+			bx := cx + cw/2 - (n*10-2)/2
+			for k := 0; k < n; k++ {
+				fill(img, image.Rect(bx+k*10, cy+ch-16, bx+k*10+8, cy+ch-10), black)
 			}
-			fill(img, image.Rect(cx+5, ly-12, cx+8, ly+3), black)
-			text(img, cx+11, ly, ellipsis(fs, cellLabel(e, d), cw-14), fs, black)
-			ly += 18
 		}
-		if len(evs) > 0 {
-			day := d
-			a.tap(r, func() { a.modal = &day })
+		if d.Equal(a.sel) {
+			box(img, image.Rect(cx+3, cy+3, cx+cw-2, cy+ch-2), 3, black)
 		}
+		day := d
+		a.tap(r, func() { a.sel, a.page = day, 0 })
 	}
-	a.footer(img)
-}
 
-func (a *App) drawModal(img *image.Gray, day time.Time) {
-	box(img, image.Rect(16, 16, 584, 784), 3, black)
-	icon(img, "close", 538, 26, 32)
-	a.tap(image.Rect(510, 16, 584, 80), func() { a.modal = nil })
-	text(img, 32, 58, dayLabel(day), face(true, 24), black)
-	fill(img, image.Rect(32, 70, 520, 72), black)
-	y := 84
-	for _, e := range a.cal.Events(day, day, a.loc) {
-		start := y
-		for _, l := range wrap(face(true, 21), evTime(e)+" — "+title(e), 520) {
-			y += 26
-			text(img, 44, y, l, face(true, 21), black)
+	// day panel
+	const px, pw = 492, W - mx - 492
+	fill(img, image.Rect(476, 64, 478, H-8), black)
+	text(img, px, 96, fmt.Sprintf("%d %s", a.sel.Day(), trMonths[a.sel.Month()]), mid, black)
+	text(img, px, 128, trDaysLong[a.sel.Weekday()], small, black)
+	fill(img, image.Rect(px, 140, W-mx, 142), black)
+
+	// each event is a block: time line, title (up to 3 lines), place and notes (up to 2 + 4 lines)
+	type line struct {
+		s    string
+		f    font.Face
+		lh   int
+		rule bool
+	}
+	var blocks [][]line
+	for _, e := range a.cal.Events(a.sel, a.sel, a.loc) {
+		when := evTime(e)
+		if e.Tag == "red" {
+			when += " · resmi tatil"
 		}
-		var extra []string
+		b := []line{{when, fb, 30, false}}
+		for _, l := range clip(wrap(mid, e.Summary, pw), 3) {
+			b = append(b, line{l, mid, 34, false})
+		}
 		if e.Loc != "" {
-			extra = append(extra, wrap(face(false, 19), "Yer: "+e.Loc, 520)...)
+			for _, l := range clip(wrap(small, e.Loc, pw), 2) {
+				b = append(b, line{l, small, 28, false})
+			}
 		}
 		if e.Desc != "" && e.Tag == "cal" { // the holiday feed's text is Google boilerplate
-			extra = append(extra, wrap(face(false, 19), e.Desc, 520)...)
-		}
-		for _, l := range extra {
-			if y > 740 {
-				break
+			for _, l := range clip(wrap(small, e.Desc, pw), 4) {
+				b = append(b, line{l, small, 28, false})
 			}
-			y += 23
-			text(img, 44, y, l, face(false, 19), black)
 		}
-		fill(img, image.Rect(32, start+6, 38, y+6), black)
-		y += 18
-		if y > 740 {
-			break
+		blocks = append(blocks, b)
+	}
+	// pages: as many whole blocks as fit between y=146 and the pager
+	const bodyTop, bodyEnd = 146, 538
+	var pages [][][]line
+	h := 0
+	for _, b := range blocks {
+		bh := 16
+		for _, l := range b {
+			bh += l.lh
+		}
+		if len(pages) == 0 || h+bh > bodyEnd-bodyTop {
+			pages, h = append(pages, nil), 0
+		}
+		pages[len(pages)-1] = append(pages[len(pages)-1], b)
+		h += bh
+	}
+	if len(blocks) == 0 {
+		text(img, px, bodyTop+34, "Etkinlik yok", small, black)
+		return
+	}
+	a.page = min(a.page, len(pages)-1)
+	y := bodyTop
+	for _, b := range pages[a.page] {
+		y0 := y + 6
+		for _, l := range b {
+			y += l.lh
+			text(img, px+14, y, l.s, l.f, black)
+		}
+		fill(img, image.Rect(px, y0, px+5, y+6), black)
+		y += 16
+	}
+	if len(pages) > 1 {
+		if a.page > 0 {
+			arrow(image.Rect(px, 542, px+56, H), "‹", func() { a.page-- })
+		}
+		centerText(img, fmt.Sprintf("%d / %d", a.page+1, len(pages)), small, px+pw/2, 580)
+		if a.page < len(pages)-1 {
+			arrow(image.Rect(W-mx-56, 542, W, H), "›", func() { a.page++ })
 		}
 	}
+}
+
+// clip keeps the first n lines, marking the cut with an ellipsis.
+func clip(lines []string, n int) []string {
+	if len(lines) <= n {
+		return lines
+	}
+	lines = lines[:n]
+	lines[n-1] += "…"
+	return lines
 }

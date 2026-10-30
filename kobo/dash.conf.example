@@ -34,6 +34,9 @@ AWAKE_SEC=120
 WIFI_IDLE_MIN=10
 #WIFI_ALWAYS=1
 
+# The screen is drawn in landscape: cw or ccw turns it onto the panel (flip it if it is upside down).
+ROTATE=cw
+
 # Touch calibration for the Kobo Mini's zForce panel (run `kobodash -calib` to redo it).
 TOUCH_SWAP=1
 TOUCH_INVX=1

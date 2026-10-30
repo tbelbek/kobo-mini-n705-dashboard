@@ -34,8 +34,9 @@ type Config struct {
 	SwapXY        bool
 	InvX, InvY    bool
 	MaxX, MaxY    int
-	RefreshMin    int // weather (and wake-up) interval
-	CalRefreshMin int // calendar fetch interval
+	Rotate        string // cw | ccw: which way the landscape picture is turned onto the portrait panel
+	RefreshMin    int    // weather (and wake-up) interval
+	CalRefreshMin int    // calendar fetch interval
 	IdleBackMin   int
 	WifiIdleMin   int  // keep Wi-Fi up this long after the last touch (and after boot)
 	WifiAlways    bool // never switch the radio off (debugging)
@@ -59,8 +60,9 @@ func loadConfig(path string) Config {
 		Holiday:       "https://calendar.google.com/calendar/ical/sv.swedish%23holiday%40group.v.calendar.google.com/public/basic.ics",
 		Input:         "/dev/input/event1",
 		Fbink:         "/opt/bin/fbink/fbink",
-		MaxX:          W,
-		MaxY:          H,
+		MaxX:          PW,
+		MaxY:          PH,
+		Rotate:        "cw",
 		RefreshMin:    60, // Open-Meteo is hourly anyway; each wake costs a Wi-Fi association
 		CalRefreshMin: 240,
 		IdleBackMin:   3,
@@ -116,6 +118,8 @@ func loadConfig(path string) Config {
 			c.MaxX = int(num)
 		case "TOUCH_MAXY":
 			c.MaxY = int(num)
+		case "ROTATE":
+			c.Rotate = v
 		case "REFRESH_MIN":
 			c.RefreshMin = int(num)
 		case "CAL_REFRESH_MIN":
@@ -162,18 +166,20 @@ type App struct {
 
 	view  string    // "dash" | "month"
 	month time.Time // first day of the shown month
-	modal *time.Time
+	sel   time.Time // selected day in the month view
+	page  int       // day panel page
 	hits  []hit
 
 	nextWake    time.Time
 	warnings    []Warning
 	calUpdated  time.Time
-	forceCal    bool // refresh button: fetch calendars too, not just weather
-	wantUpdate  bool // refresh button: also check for a new release right away
-	wifiPinned  bool // switched on by hand: stays up until tapped again
-	skipWake    bool // this tap switched Wi-Fi off; don't let it wake the radio again
-	shownOnline bool // Wi-Fi state in the last drawn frame
-	busy        bool // refresh button pressed, fetch in progress
+	forceCal    bool      // refresh button: fetch calendars too, not just weather
+	wantUpdate  bool      // refresh button: also check for a new release right away
+	wifiPinned  bool      // switched on by hand: stays up until tapped again
+	skipWake    bool      // this tap switched Wi-Fi off; don't let it wake the radio again
+	shownOnline bool      // Wi-Fi state in the last drawn frame
+	busy        bool      // refresh button pressed, fetch in progress
+	weatherAt   time.Time // last successful weather fetch
 }
 
 // toggleWifi: the Wi-Fi icon. Off -> on and pinned; on (pinned or auto) -> off, back to auto.
@@ -203,6 +209,7 @@ func (a *App) refresh() {
 	d, err2 := fetchWeather(a.cfg.Places[1], 8, 2)
 	if err1 == nil && err2 == nil {
 		a.wGlance, a.wDetail, a.wErr = g, d, nil
+		a.weatherAt = time.Now().Round(0)
 	} else {
 		a.wErr = firstErr(err1, err2)
 		log.Printf("weather: %v", a.wErr)
@@ -301,7 +308,7 @@ func firstErr(errs ...error) error {
 const framePath = "/tmp/kobodash.png"
 
 func (a *App) show() {
-	if err := writePNG(framePath, a.render()); err != nil {
+	if err := writePNG(framePath, panelFrame(a.render(), a.cfg.Rotate)); err != nil {
 		log.Printf("frame: %v", err)
 		return
 	}
@@ -362,25 +369,25 @@ func (c Config) toScreen(x, y int) image.Point {
 	if c.SwapXY {
 		x, y = y, x
 	}
-	sx, sy := x*W/c.MaxX, y*H/c.MaxY
+	sx, sy := x*PW/c.MaxX, y*PH/c.MaxY // panel pixels (portrait)
 	if c.InvX {
-		sx = W - 1 - sx
+		sx = PW - 1 - sx
 	}
 	if c.InvY {
-		sy = H - 1 - sy
+		sy = PH - 1 - sy
 	}
-	return image.Pt(sx, sy)
+	return toLogical(image.Pt(sx, sy), c.Rotate)
 }
 
 func main() {
 	confPath := flag.String("conf", "/opt/kobodash/dash.conf", "config file")
 	once := flag.String("once", "", "render one frame to this PNG and exit")
-	view := flag.String("view", "dash", "with -once: dash | month | modal")
+	view := flag.String("view", "dash", "with -once: dash | month")
 	calib := flag.Bool("calib", false, "print raw touch coordinates")
 	flag.String("server", "", "ignored; run.sh from the image still passes it")
 	stest := flag.Int("suspendtest", 0, "arm the RTC alarm N seconds ahead, suspend, report how long it slept")
 	fakeNow := flag.String("now", "", "with -once: pretend it is this local time (2006-01-02T15:04)")
-	fakeWarn := flag.Bool("fakewarn", false, "with -once: draw sample SMHI warnings")
+	fakeWarn := flag.Bool("fakewarn", false, "with -once: draw sample SMHI warnings and battery")
 	genkey := flag.String("genkey", "", "release tooling: write a new ed25519 private key here, print the public key")
 	sign := flag.String("sign", "", "release tooling: sign the file given as argument with this private key")
 	showVersion := flag.Bool("version", false, "print version")
@@ -421,16 +428,14 @@ func main() {
 		a.refresh()
 		if *fakeWarn {
 			a.warnings = []Warning{{"ORANGE", reasonTR("Rain")}, {"YELLOW", reasonTR("Wind")}}
+			fakeBattery = "pil %85"
 		}
 		now := clock().In(loc)
 		switch *view {
 		case "month":
-			a.view, a.month = "month", firstOfMonth(now)
-		case "modal":
-			d := midnight(now, loc)
-			a.view, a.month, a.modal = "month", firstOfMonth(now), &d
+			a.openDay(midnight(now, loc))
 		}
-		if err := writePNG(*once, a.render()); err != nil {
+		if err := writePNG(*once, a.render()); err != nil { // landscape, as people see it
 			log.Fatal(err)
 		}
 		return
@@ -488,8 +493,8 @@ func main() {
 				maybeUpdate()
 			}
 		case <-tick.C:
-			if (a.view != "dash" || a.modal != nil) && time.Since(lastTouch) > time.Duration(cfg.IdleBackMin)*time.Minute {
-				a.view, a.modal = "dash", nil // nobody is looking: go back to the dashboard
+			if a.view != "dash" && time.Since(lastTouch) > time.Duration(cfg.IdleBackMin)*time.Minute {
+				a.view = "dash" // nobody is looking: go back to the dashboard
 				a.show()
 			}
 			due := time.Since(a.updated) >= time.Duration(cfg.RefreshMin)*time.Minute
@@ -497,7 +502,7 @@ func main() {
 			if due || retry {
 				lastTry = time.Now()
 				a.refresh()
-				if a.view == "dash" && a.modal == nil {
+				if a.view == "dash" {
 					a.show()
 				}
 			}
@@ -535,7 +540,7 @@ func main() {
 // sleepUntil suspends until due (RTC alarm) or the power button. Returns "timer",
 // "button", or "error" when it could not sleep safely.
 func (a *App) sleepUntil(due time.Time) string {
-	a.view, a.modal, a.nextWake = "dash", nil, due
+	a.view, a.nextWake = "dash", due
 	wifiDown()
 	a.show() // this frame stays on the panel while asleep
 	due = due.Round(0)

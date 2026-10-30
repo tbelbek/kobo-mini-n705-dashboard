@@ -12,7 +12,7 @@ func TestQuotesFit(t *testing.T) {
 		t.Fatal("no quotes embedded")
 	}
 	for _, q := range quotes {
-		lines := wrap(faceItalic(18), "“"+q.Text+"”", 572)
+		lines := wrap(quoteFace(), "“"+q.Text+"”", W-2*mx)
 		if len(lines) > 4 || strings.HasSuffix(lines[len(lines)-1], "…") {
 			t.Errorf("%d lines (max 4): %s", len(lines), q.Text)
 		}

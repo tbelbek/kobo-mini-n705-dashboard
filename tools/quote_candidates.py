@@ -29,6 +29,8 @@ weep wept sad sadness sorrow sorrowful grief pain hate hated fear afraid war blo
 poor sick misery miserable terrible cruel wicked alas despair devil hell damn
 grave coffin funeral starve hungry lonely ugly fool stupid wretched horror
 never""".split())
+# extra positive words for a run, e.g. wisdom literature: EXTRA_POS="good virtue calm ..."
+POS |= set(os.environ.get("EXTRA_POS", "").split())
 SENT = re.compile(r'(?<=[.!?])["”’]?\s+(?=["“‘]?[A-Z])')
 
 
@@ -74,6 +76,8 @@ def main():
             continue
         a = b["authors"][0]
         if not a.get("death_year") or a["death_year"] >= 1955:
+            continue
+        if not b.get("all_pd", True):  # a translator/editor died 1955 or later
             continue
         title = re.split(r"[:;(]|, or,? ", b["title"])[0].strip()
         key = re.sub(r"\W+|vol(ume)?\s*\w+", "", title.lower())

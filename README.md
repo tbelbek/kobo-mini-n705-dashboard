@@ -18,7 +18,7 @@ It runs as a single Go binary on the Alpine Linux base that [InkBox / Quill OS](
 - Calendar events from today to the end of the week, with the ISO week number. After 12:00 on Sunday it shows the rest of the day plus next week. Sources are your private ICS links plus Swedish public holidays; official red days are shaded.
 - A month view (prev/next/today) and a day pop-up with location and notes. Multi-day events span their days.
 - A top bar with Wi-Fi state (tap to pin it on) and a refresh button that also checks for a new release. The footer shows today's date in large type, plus the battery level and the next scheduled update.
-- One uplifting passage a day above the footer: prose from public-domain novels and verse from public-domain poets, in Turkish (`kobo/quotes.tsv`).
+- One uplifting passage a day above the footer: prose from public-domain novels and essays, and verse from public-domain poets, in Turkish (`kobo/quotes.tsv`).
 
 ## Power model
 
@@ -140,11 +140,11 @@ To publish a release: `tools/release.sh v0.2.0` builds, signs, tags and uploads 
 
 ## Daily passages
 
-`kobo/quotes.tsv` holds 164 passages: 95 sentences from novels, 43 extracts from English poems and 26 from Yunus Emre. Each row has the Turkish text, author, work, the original and its source (a Project Gutenberg book number, or `ws:` for a Turkish Wikisource page). Verse keeps its line breaks, written as `\n`. A novel gives at most one passage and a poetry collection at most three. Every author or translator died before 1955, so the originals are public domain in the US, the EU and Turkey. The English translations into Turkish are new; Yunus Emre is shown as written.
+`kobo/quotes.tsv` holds 252 passages: 144 sentences from novels, 39 from essays and philosophy (Stevenson, Chesterton, Emerson, Marcus Aurelius and others), 43 extracts from English poems and 26 from Yunus Emre. Each row has the Turkish text, author, work, the original and its source (a Project Gutenberg book number, or `ws:` for a Turkish Wikisource page). Verse keeps its line breaks, written as `\n`. A novel gives at most one passage and a poetry collection at most three. Every author or translator died before 1955, so the originals are public domain in the US, the EU and Turkey. The English translations into Turkish are new; Yunus Emre is shown as written.
 
 The display shows one passage per day, the same one all day. Each year gets its own shuffle, so the order changes every year and nothing repeats until the pool runs out.
 
-How they were chosen: `tools/quote_candidates.py` and `tools/poem_candidates.py` pulled about 7,000 likely lines out of the most downloaded public-domain novels and poetry on Project Gutenberg. An LLM pass kept the joyful, self-contained ones and translated them; a stricter editing pass kept only optimistic lines with real meaning, dropped anything whose source is about grief, and rewrote weak translations. `tools/verify_quotes.py` checks that every original appears word for word in its source, and `go test ./kobo` checks that each passage fits the four lines the dashboard gives it.
+How they were chosen: `tools/quote_candidates.py` and `tools/poem_candidates.py` pulled about 11,000 likely lines out of the 6,000 most downloaded books on Project Gutenberg (novels, essays, poetry). An LLM pass kept the joyful, self-contained ones and translated them; a stricter editing pass kept only optimistic lines with real meaning, dropped anything whose source is about grief, and rewrote weak translations. `tools/verify_quotes.py` checks that every original appears word for word in its source, and `go test ./kobo` checks that each passage fits the four lines the dashboard gives it.
 
 ## Development
 

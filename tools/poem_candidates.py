@@ -24,6 +24,17 @@ Teasdale Wilcox Kilmer Dyke Kabir Rumi Hafiz Riley Dunbar Herrick Shakespeare
 Bryant Whittier Lowell Hunt Cowper Clare Moore Field Guest""".split()
 
 
+def all_pd(authors):
+    """Every contributor except illustrators must have died before 1955 (life + 70 in TR/EU)."""
+    for p in authors.split(";"):
+        if not p.strip() or "Illustrator" in p:
+            continue
+        m = re.search(r"-(\d{1,4})\b", p)  # death year; handles "552 BCE-480 BCE" and "-1916"
+        if not m or int(m.group(1)) >= 1955:
+            return False
+    return True
+
+
 def windows(text):
     for stanza in re.split(r"\n\s*\n", text):
         lines = [l.strip() for l in stanza.splitlines() if l.strip()]
@@ -58,6 +69,8 @@ def main():
             continue
         m = re.search(r"^([^;]*?),\s*(\d{3,4})\??-(\d{3,4})", r["Authors"])
         if not m or int(m.group(3)) >= 1955:
+            continue
+        if not all_pd(r["Authors"]):
             continue
         surname = m.group(1).split(",")[0].strip()
         poet = next((p for p in POETS if p.lower() in surname.lower()), None)

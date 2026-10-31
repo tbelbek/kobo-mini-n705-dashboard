@@ -460,9 +460,9 @@ func (a *App) drawDash(img *image.Gray) {
 			s := "veri " + a.weatherAt.In(a.loc).Format("15:04")
 			text(img, rail-12-textW(small, s), 274, s, small, black)
 		}
-		fill(img, image.Rect(mx, 326, rail-mx, 328), black)
-		// İstanbul sits just above the version line at the foot of the rail, which follows the passage band
+		// İstanbul (and its rule) sit just above the version line at the foot of the rail, which follows the passage band
 		ty := min(max(band-38, 442), 470)
+		fill(img, image.Rect(mx, ty-116, rail-mx, ty-114), black)
 		text(img, mx, ty-76, a.cfg.Places[0].Name, face(true, tMid), black)
 		x = text(img, tx+2, ty, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
 		icon(img, wcat(a.wGlance.Current.Code), x+8, ty-48, 48)

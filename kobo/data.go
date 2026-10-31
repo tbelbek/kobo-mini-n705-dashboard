@@ -56,6 +56,12 @@ type Weather struct {
 		Wind    []float64 `json:"wind_speed_10m"`
 		WindDir []float64 `json:"wind_direction_10m"`
 	} `json:"hourly"`
+	Daily struct {
+		TMin []float64 `json:"temperature_2m_min"`
+		TMax []float64 `json:"temperature_2m_max"`
+	} `json:"daily"`
+	Span   string  // "bugün" | "yarın": which day Lo/Hi cover; "" = no range
+	Lo, Hi float64 // that day's min / max
 }
 
 // fetchWeather: current conditions from Open-Meteo (the İstanbul glance).
@@ -65,6 +71,8 @@ func fetchWeather(p Place) (*Weather, error) {
 	q.Set("longitude", strconv.FormatFloat(p.Lon, 'f', 4, 64))
 	q.Set("timezone", p.TZ)
 	q.Set("current", "temperature_2m,weather_code")
+	q.Set("daily", "temperature_2m_min,temperature_2m_max")
+	q.Set("forecast_days", "1")
 	b, err := get("https://api.open-meteo.com/v1/forecast?" + q.Encode())
 	if err != nil {
 		return nil, err
@@ -73,13 +81,17 @@ func fetchWeather(p Place) (*Weather, error) {
 	if err := json.Unmarshal(b, &w); err != nil {
 		return nil, err
 	}
+	if len(w.Daily.TMin) > 0 && len(w.Daily.TMax) > 0 {
+		w.Span, w.Lo, w.Hi = "bugün", w.Daily.TMin[0], w.Daily.TMax[0]
+	}
 	return &w, nil
 }
 
 // smhiWMO maps SMHI's symbol_code (1-27) onto the WMO codes the icons and labels use.
 var smhiWMO = [28]int{0, 0, 1, 2, 2, 3, 3, 45, 80, 81, 82, 95, 66, 66, 67, 85, 86, 86, 61, 63, 65, 95, 66, 66, 67, 71, 73, 75}
 
-// fetchSMHI: Göteborg's hourly forecast from SMHI (snow1g point forecast), the next `hours` hours.
+// fetchSMHI: Göteborg's hourly forecast from SMHI (snow1g point forecast), the next `hours` hours,
+// plus the min/max of the rest of today, or of tomorrow once the evening starts (rangeFrom).
 // SMHI gives no feels-like, so it is the Steadman apparent temperature, the formula Open-Meteo uses.
 func fetchSMHI(p Place, hours int) (*Weather, error) {
 	b, err := get(fmt.Sprintf("https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1/geotype/point/lon/%.4f/lat/%.4f/data.json", p.Lon, p.Lat))
@@ -107,9 +119,29 @@ func fetchSMHI(p Place, hours int) (*Weather, error) {
 	}
 	var w Weather
 	h := &w.Hourly
-	from := time.Now().Truncate(time.Hour)
+	now := clock()
+	from := now.Truncate(time.Hour)
+	day := now.In(loc)
+	w.Span = "bugün"
+	if day.Hour() >= rangeFrom {
+		w.Span, day = "yarın", day.AddDate(0, 0, 1)
+	}
+	ymd := day.Format("2006-01-02")
+	n := 0
 	for _, t := range r.TimeSeries {
-		if t.Time.Before(from) || len(h.Time) == hours {
+		if t.Time.Before(from) {
+			continue
+		}
+		if t.Time.In(loc).Format("2006-01-02") == ymd {
+			if n == 0 || t.Data.Temp < w.Lo {
+				w.Lo = t.Data.Temp
+			}
+			if n == 0 || t.Data.Temp > w.Hi {
+				w.Hi = t.Data.Temp
+			}
+			n++
+		}
+		if len(h.Time) == hours {
 			continue
 		}
 		d := t.Data
@@ -127,6 +159,9 @@ func fetchSMHI(p Place, hours int) (*Weather, error) {
 	}
 	if len(h.Time) == 0 {
 		return nil, fmt.Errorf("smhi: no forecast hours")
+	}
+	if n == 0 {
+		w.Span = ""
 	}
 	w.Current.Temp, w.Current.Code = h.Temp[0], h.Code[0]
 	return &w, nil
@@ -149,6 +184,31 @@ func in(c int, set ...int) bool {
 		}
 	}
 	return false
+}
+
+// rangeFrom: from this hour on, the rail's day range is tomorrow's (the rest of today is a few hours).
+const rangeFrom = 17
+
+// sunTimes: sunrise and sunset on day's calendar date (NOAA sunrise equation, ~1 min).
+// ok is false in polar day/night.
+func sunTimes(lat, lon float64, day time.Time) (rise, set time.Time, ok bool) {
+	rad := math.Pi / 180
+	noon := time.Date(day.Year(), day.Month(), day.Day(), 12, 0, 0, 0, time.UTC)
+	j := float64(noon.Unix())/86400 + 2440587.5 - 2451545.0 + 0.0008 - lon/360
+	m := math.Mod(357.5291+0.98560028*j, 360)
+	c := 1.9148*math.Sin(m*rad) + 0.02*math.Sin(2*m*rad) + 0.0003*math.Sin(3*m*rad)
+	l := math.Mod(m+c+180+102.9372, 360)
+	transit := 2451545.0 + j + 0.0053*math.Sin(m*rad) - 0.0069*math.Sin(2*l*rad)
+	decl := math.Asin(math.Sin(l*rad) * math.Sin(23.4397*rad))
+	cosW := (math.Sin(-0.833*rad) - math.Sin(lat*rad)*math.Sin(decl)) / (math.Cos(lat*rad) * math.Cos(decl))
+	if cosW < -1 || cosW > 1 {
+		return time.Time{}, time.Time{}, false
+	}
+	w := math.Acos(cosW) / rad / 360
+	jd := func(x float64) time.Time {
+		return time.Unix(int64(math.Round((x-2440587.5)*86400)), 0).In(day.Location())
+	}
+	return jd(transit - w), jd(transit + w), true
 }
 
 // compass: 8-point Turkish wind direction the wind comes FROM (K=kuzey, D=doğu, G=güney, B=batı).

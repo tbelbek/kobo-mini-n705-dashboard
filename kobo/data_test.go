@@ -26,3 +26,22 @@ func TestICSExdateAndCancelled(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+// Reference: Open-Meteo's sunrise/sunset for Göteborg (its past dates ignore DST: August shifted +1 h here).
+func TestSunTimes(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	for _, c := range []struct{ day, rise, set string }{
+		{"2026-10-31", "07:22", "16:28"},
+		{"2026-08-01", "05:06", "21:28"},
+	} {
+		d, _ := time.ParseInLocation("2006-01-02", c.day, loc)
+		rise, set, ok := sunTimes(57.7089, 11.9746, d)
+		near := func(got time.Time, want string) bool {
+			w, _ := time.ParseInLocation("2006-01-02 15:04", c.day+" "+want, loc)
+			return ok && got.Sub(w).Abs() <= 4*time.Minute
+		}
+		if !near(rise, c.rise) || !near(set, c.set) {
+			t.Errorf("%s: got %s-%s, want %s-%s", c.day, rise.Format("15:04"), set.Format("15:04"), c.rise, c.set)
+		}
+	}
+}

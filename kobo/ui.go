@@ -454,18 +454,56 @@ func (a *App) drawDash(img *image.Gray) {
 		}
 		x := text(img, tx, 234, t, hf, black)
 		icon(img, wcat(g.Code), x+4, 128, 64)
-		text(img, mx, 274, fmt.Sprintf("his %d°", round(atf(h.Feels, 0))), small, black)
-		text(img, mx, 304, fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0))), small, black)
+		feels := fmt.Sprintf("his %d°", round(atf(h.Feels, 0)))
+		wind := fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0)))
+		text(img, mx, 274, feels, small, black)
+		text(img, mx, 305, wind, small, black)
 		if a.wErr != nil && !a.weatherAt.IsZero() { // last fetch failed: say how old these numbers are
 			s := "veri " + a.weatherAt.In(a.loc).Format("15:04")
-			text(img, rail-12-textW(small, s), 274, s, small, black)
+			text(img, rail-12-textW(small, s), 94, s, small, black)
 		}
+		// the day's range, right-aligned beside feels-like/wind: coat for the whole day, not just now
+		if w := a.wDetail; w.Span != "" {
+			r := fmt.Sprintf("%d° / %d°", round(w.Lo), round(w.Hi))
+			bold := face(true, tSmall)
+			rw := textW(bold, r)
+			if rail-12-rw >= mx+max(textW(small, feels), textW(small, wind))+12 {
+				text(img, rail-12-textW(small, w.Span), 274, w.Span, small, black)
+				text(img, rail-12-rw, 305, r, bold, black)
+			}
+		}
+
 		// İstanbul (and its rule) sit just above the version line at the foot of the rail, which follows the passage band
-		ty := min(max(band-38, 442), 470)
-		fill(img, image.Rect(mx, ty-116, rail-mx, ty-114), black)
-		text(img, mx, ty-76, a.cfg.Places[0].Name, face(true, tMid), black)
-		x = text(img, tx+2, ty, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
-		icon(img, wcat(a.wGlance.Current.Code), x+8, ty-48, 48)
+		ty := min(max(band-38, 433), 470)
+		rule := max(ty-116, 317)
+		if rule >= 351 { // room for daylight under the wind line
+			p := a.cfg.Places[1]
+			if rise, set, ok := sunTimes(p.Lat, p.Lon, now); ok {
+				s := "gün batımı " + set.Format("15:04")
+				if now.Before(rise) {
+					s = "gün doğumu " + rise.Format("15:04")
+				} else if now.After(set) {
+					if r2, _, ok2 := sunTimes(p.Lat, p.Lon, now.AddDate(0, 0, 1)); ok2 {
+						s = "gün doğumu " + r2.Format("15:04")
+					}
+				}
+				text(img, mx, 337, s, small, black)
+			}
+		}
+		fill(img, image.Rect(mx, rule, rail-mx, rule+2), black)
+		text(img, mx, rule+40, a.cfg.Places[0].Name, face(true, tMid), black)
+		gl := a.wGlance
+		x = text(img, tx+2, ty, fmt.Sprintf("%d°", round(gl.Current.Temp)), face(true, 68), black)
+		r := ""
+		if gl.Span != "" {
+			r = fmt.Sprintf("%d° / %d°", round(gl.Lo), round(gl.Hi))
+		}
+		if r != "" && x+10+textW(small, r) <= rail-8 { // icon above its range, both beside the number
+			icon(img, wcat(gl.Current.Code), x+10, ty-66, 40)
+			text(img, x+10, ty, r, small, black)
+		} else {
+			icon(img, wcat(gl.Current.Code), x+8, ty-48, 48)
+		}
 		if band-12 >= ty+22 { // a very long passage leaves no room: drop the version, not the weather
 			text(img, mx, band-12, version, face(false, tTiny), black) // which release is on the wall, without ssh
 		}

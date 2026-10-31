@@ -440,8 +440,6 @@ func (a *App) drawDash(img *image.Gray) {
 	band := 588 - len(qLines)*quoteLH - own - 2
 	fill(img, image.Rect(rail, 58, rail+2, band), black)
 
-	text(img, mx, band-12, version, face(false, tTiny), black) // which release is on the wall, without ssh
-
 	// rail: Göteborg huge with its icon right beside the number, İstanbul below
 	if a.wDetail != nil && a.wGlance != nil {
 		g, h := a.wDetail.Current, a.wDetail.Hourly
@@ -466,6 +464,7 @@ func (a *App) drawDash(img *image.Gray) {
 		text(img, mx, 366, a.cfg.Places[0].Name, face(true, tMid), black)
 		x = text(img, tx+2, 442, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
 		icon(img, wcat(a.wGlance.Current.Code), x+8, 394, 48)
+		text(img, mx, 474, version, face(false, tTiny), black) // which release is on the wall, without ssh
 
 		// right pane, top: next 5 hours
 		px0 := rail + 18

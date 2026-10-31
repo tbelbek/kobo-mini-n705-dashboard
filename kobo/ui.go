@@ -462,8 +462,8 @@ func (a *App) drawDash(img *image.Gray) {
 		}
 		fill(img, image.Rect(mx, 326, rail-mx, 328), black)
 		text(img, mx, 366, a.cfg.Places[0].Name, face(true, tMid), black)
-		x = text(img, tx+2, 442, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
-		icon(img, wcat(a.wGlance.Current.Code), x+8, 394, 48)
+		x = text(img, tx+2, 422, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, tLarge), black)
+		icon(img, wcat(a.wGlance.Current.Code), x+6, 386, 40)
 
 		// right pane, top: next 5 hours
 		px0 := rail + 18

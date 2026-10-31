@@ -56,30 +56,15 @@ type Weather struct {
 		Wind    []float64 `json:"wind_speed_10m"`
 		WindDir []float64 `json:"wind_direction_10m"`
 	} `json:"hourly"`
-	Daily struct {
-		Time    []string  `json:"time"`
-		Code    []int     `json:"weather_code"`
-		PSum    []float64 `json:"precipitation_sum"`
-		WindMax []float64 `json:"wind_speed_10m_max"`
-		TMin    []float64 `json:"temperature_2m_min"`
-		TMax    []float64 `json:"temperature_2m_max"`
-	} `json:"daily"`
 }
 
-func fetchWeather(p Place, hours, days int) (*Weather, error) {
+// fetchWeather: current conditions from Open-Meteo (the İstanbul glance).
+func fetchWeather(p Place) (*Weather, error) {
 	q := url.Values{}
 	q.Set("latitude", strconv.FormatFloat(p.Lat, 'f', 4, 64))
 	q.Set("longitude", strconv.FormatFloat(p.Lon, 'f', 4, 64))
 	q.Set("timezone", p.TZ)
 	q.Set("current", "temperature_2m,weather_code")
-	if hours > 0 {
-		q.Set("hourly", "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m")
-		q.Set("forecast_hours", strconv.Itoa(hours))
-	}
-	if days > 0 {
-		q.Set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max")
-		q.Set("forecast_days", strconv.Itoa(days))
-	}
 	b, err := get("https://api.open-meteo.com/v1/forecast?" + q.Encode())
 	if err != nil {
 		return nil, err
@@ -88,6 +73,62 @@ func fetchWeather(p Place, hours, days int) (*Weather, error) {
 	if err := json.Unmarshal(b, &w); err != nil {
 		return nil, err
 	}
+	return &w, nil
+}
+
+// smhiWMO maps SMHI's symbol_code (1-27) onto the WMO codes the icons and labels use.
+var smhiWMO = [28]int{0, 0, 1, 2, 2, 3, 3, 45, 80, 81, 82, 95, 66, 66, 67, 85, 86, 86, 61, 63, 65, 95, 66, 66, 67, 71, 73, 75}
+
+// fetchSMHI: Göteborg's hourly forecast from SMHI (snow1g point forecast), the next `hours` hours.
+// SMHI gives no feels-like, so it is the Steadman apparent temperature, the formula Open-Meteo uses.
+func fetchSMHI(p Place, hours int) (*Weather, error) {
+	b, err := get(fmt.Sprintf("https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1/geotype/point/lon/%.4f/lat/%.4f/data.json", p.Lon, p.Lat))
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		TimeSeries []struct {
+			Time time.Time `json:"time"`
+			Data struct {
+				Temp   float64 `json:"air_temperature"`
+				Wind   float64 `json:"wind_speed"` // m/s
+				Dir    float64 `json:"wind_from_direction"`
+				RH     float64 `json:"relative_humidity"`
+				Symbol int     `json:"symbol_code"`
+			} `json:"data"`
+		} `json:"timeSeries"`
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	loc, err := time.LoadLocation(p.TZ)
+	if err != nil {
+		return nil, err
+	}
+	var w Weather
+	h := &w.Hourly
+	from := time.Now().Truncate(time.Hour)
+	for _, t := range r.TimeSeries {
+		if t.Time.Before(from) || len(h.Time) == hours {
+			continue
+		}
+		d := t.Data
+		code := 3
+		if d.Symbol > 0 && d.Symbol < len(smhiWMO) {
+			code = smhiWMO[d.Symbol]
+		}
+		e := d.RH / 100 * 6.105 * math.Exp(17.27*d.Temp/(237.7+d.Temp))
+		h.Time = append(h.Time, t.Time.In(loc).Format("2006-01-02T15:04"))
+		h.Temp = append(h.Temp, d.Temp)
+		h.Feels = append(h.Feels, d.Temp+0.33*e-0.70*d.Wind-4.00)
+		h.Code = append(h.Code, code)
+		h.Wind = append(h.Wind, d.Wind*3.6)
+		h.WindDir = append(h.WindDir, d.Dir)
+	}
+	if len(h.Time) == 0 {
+		return nil, fmt.Errorf("smhi: no forecast hours")
+	}
+	w.Current.Temp, w.Current.Code = h.Temp[0], h.Code[0]
 	return &w, nil
 }
 
@@ -108,39 +149,6 @@ func in(c int, set ...int) bool {
 		}
 	}
 	return false
-}
-
-// alerts: threshold heuristic for today+tomorrow.
-// ponytail: Open-Meteo has no official warning feed; swap for SMHI if authoritative alerts matter.
-func alerts(w *Weather) []string {
-	d := w.Daily
-	var out []string
-	for i := 0; i < 2 && i < len(d.Time); i++ {
-		when := "bugün"
-		if i == 1 {
-			when = "yarın"
-		}
-		code := at(d.Code, i)
-		if in(code, 95, 96, 99) {
-			out = append(out, when+": "+wmo[code])
-		}
-		if in(code, 71, 73, 75, 77, 85, 86) {
-			out = append(out, when+": kar ("+wmo[code]+")")
-		}
-		if p := atf(d.PSum, i); p >= 20 {
-			out = append(out, fmt.Sprintf("%s: şiddetli yağış (%g mm)", when, p))
-		}
-		if v := atf(d.WindMax, i); v >= 50 {
-			out = append(out, fmt.Sprintf("%s: kuvvetli rüzgar (%d km/s)", when, int(math.Round(v))))
-		}
-		if v := atf(d.TMin, i); v <= -5 {
-			out = append(out, fmt.Sprintf("%s: don riski (%d°)", when, int(math.Round(v))))
-		}
-		if v := atf(d.TMax, i); v >= 34 {
-			out = append(out, fmt.Sprintf("%s: aşırı sıcak (%d°)", when, int(math.Round(v))))
-		}
-	}
-	return out
 }
 
 // compass: 8-point Turkish wind direction the wind comes FROM (K=kuzey, D=doğu, G=güney, B=batı).
@@ -395,7 +403,11 @@ func parseICS(raw string, lo, hi time.Time, loc *time.Location) []Event {
 					params[strings.ToUpper(kv[0])] = kv[1]
 				}
 			}
-			cur[key], curParams[key] = l[i+1:], params
+			v := l[i+1:]
+			if key == "EXDATE" && cur[key] != "" { // several EXDATE lines: keep them all
+				v = cur[key] + "," + v
+			}
+			cur[key], curParams[key] = v, params
 		}
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Start.Before(out[b].Start) })
@@ -403,7 +415,7 @@ func parseICS(raw string, lo, hi time.Time, loc *time.Location) []Event {
 }
 
 func buildEvents(p map[string]string, params map[string]map[string]string, lo, hi time.Time, loc *time.Location) []Event {
-	if _, ok := p["DTSTART"]; !ok {
+	if _, ok := p["DTSTART"]; !ok || strings.EqualFold(p["STATUS"], "CANCELLED") {
 		return nil
 	}
 	start, allDay, err := parseDT(p["DTSTART"], params["DTSTART"], loc)
@@ -432,6 +444,21 @@ func buildEvents(p map[string]string, params map[string]map[string]string, lo, h
 			}
 		}
 		starts = expand(start, rule, lo.AddDate(0, 0, -span), hi, loc)
+	}
+	if ex := p["EXDATE"]; ex != "" { // occurrences deleted from a recurring event
+		skip := map[time.Time]bool{}
+		for _, v := range strings.Split(ex, ",") {
+			if t, _, err := parseDT(v, params["EXDATE"], loc); err == nil {
+				skip[t.UTC()] = true
+			}
+		}
+		kept := starts[:0]
+		for _, s := range starts {
+			if !skip[s.UTC()] {
+				kept = append(kept, s)
+			}
+		}
+		starts = kept
 	}
 	var out []Event
 	for _, s := range starts {

@@ -445,13 +445,14 @@ func (a *App) drawDash(img *image.Gray) {
 		g, h := a.wDetail.Current, a.wDetail.Hourly
 		text(img, mx, 94, a.cfg.Places[1].Name, face(true, tMid), black)
 		t := fmt.Sprintf("%d°", round(g.Temp))
+		const tx = 24 // the bezel overlaps the panel's left edge: keep the big numbers clear of it
 		hf := face(true, tHero)
 		for _, sz := range []float64{tHero, 120, 104} { // "-12°" is wider than "8°"; the icon must stay in the rail
-			if hf = face(true, sz); 10+textW(hf, t)+4+64 <= rail-8 {
+			if hf = face(true, sz); tx+textW(hf, t)+4+64 <= rail-8 {
 				break
 			}
 		}
-		x := text(img, 10, 234, t, hf, black)
+		x := text(img, tx, 234, t, hf, black)
 		icon(img, wcat(g.Code), x+4, 128, 64)
 		text(img, mx, 274, fmt.Sprintf("his %d°", round(atf(h.Feels, 0))), small, black)
 		text(img, mx, 304, fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0))), small, black)
@@ -461,7 +462,7 @@ func (a *App) drawDash(img *image.Gray) {
 		}
 		fill(img, image.Rect(mx, 326, rail-mx, 328), black)
 		text(img, mx, 366, a.cfg.Places[0].Name, face(true, tMid), black)
-		x = text(img, 12, 442, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
+		x = text(img, tx+2, 442, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
 		icon(img, wcat(a.wGlance.Current.Code), x+8, 394, 48)
 
 		// right pane, top: next 5 hours

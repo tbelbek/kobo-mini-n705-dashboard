@@ -205,8 +205,8 @@ func (a *App) refresh() {
 		a.updated = time.Now().Round(0) // wall clock only: monotonic time stops while suspended
 		return
 	}
-	g, err1 := fetchWeather(a.cfg.Places[0], 0, 0)
-	d, err2 := fetchWeather(a.cfg.Places[1], 8, 2)
+	g, err1 := fetchWeather(a.cfg.Places[0])
+	d, err2 := fetchSMHI(a.cfg.Places[1], 8)
 	if err1 == nil && err2 == nil {
 		a.wGlance, a.wDetail, a.wErr = g, d, nil
 		a.weatherAt = time.Now().Round(0)

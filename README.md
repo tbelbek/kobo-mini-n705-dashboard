@@ -13,7 +13,7 @@ It runs as a single Go binary on the Alpine Linux base that [InkBox / Quill OS](
 ## What it shows
 
 - A left rail with the current weather for two places: the home city in 140 px type (readable from across the kitchen), with feels-like and wind.
-- The next 5 hours for the home city: temperature, feels-like, wind direction and speed ([Open-Meteo](https://open-meteo.com), no API key).
+- The next 5 hours for the home city: temperature, feels-like, wind direction and speed ([SMHI](https://opendata.smhi.se) point forecast, no API key; the second city comes from [Open-Meteo](https://open-meteo.com)). SMHI only covers the Nordics.
 - Official yellow/orange/red warnings from [SMHI](https://www.smhi.se) for a Swedish county, e.g. `SARI UYARI — kuvvetli rüzgar`.
 - Calendar events from today to the end of the week, with the ISO week number. After 12:00 on Sunday it shows the rest of the day plus next week. Sources are your private ICS links plus Swedish public holidays; official red days are shaded.
 - A calendar view: the month as a grid of dates with one mark per event (red days shaded, today ringed), and a side panel with the chosen day's events in full: time, title, place and notes. Multi-day events span their days.
@@ -194,7 +194,7 @@ Write `kobo-mini-backup.img` back to restore the stock Kobo firmware, or the pla
 
 - [InkBox / Quill OS](https://github.com/Quill-OS/quill), whose recovery scripts, init and overlay design made this possible.
 - [FBInk](https://github.com/NiLuJe/FBInk) draws to the panel.
-- Weather from [Open-Meteo](https://open-meteo.com); warnings from [SMHI open data](https://opendata.smhi.se).
+- Home-city forecast and warnings from [SMHI open data](https://opendata.smhi.se); second-city weather from [Open-Meteo](https://open-meteo.com).
 - [Go fonts](https://go.dev/blog/go-fonts) and [oksvg](https://github.com/srwiley/oksvg).
 
 ## License

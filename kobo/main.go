@@ -441,6 +441,15 @@ func main() {
 		return
 	}
 
+	if onDevice() { // /tmp is gone after a reboot; keep a copy on the card to see what happened overnight
+		const keep = "/tmp/p3/rootfs/write/opt/kobodash/kobodash.log"
+		if st, err := os.Stat(keep); err == nil && st.Size() > 256<<10 {
+			os.Rename(keep, keep+".old")
+		}
+		if f, err := os.OpenFile(keep, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			log.SetOutput(io.MultiWriter(os.Stderr, f))
+		}
+	}
 	log.Printf("kobodash %s starting", version)
 	exec.Command("killall", "-9", "inkbox-splash").Run()                     // InkBox's boot splash keeps drawing otherwise
 	os.WriteFile("/sys/class/leds/pmic_ledsg/brightness", []byte("0"), 0644) // ipd used to switch the LED off

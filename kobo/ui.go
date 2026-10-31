@@ -461,10 +461,14 @@ func (a *App) drawDash(img *image.Gray) {
 			text(img, rail-12-textW(small, s), 274, s, small, black)
 		}
 		fill(img, image.Rect(mx, 326, rail-mx, 328), black)
-		text(img, mx, 366, a.cfg.Places[0].Name, face(true, tMid), black)
-		x = text(img, tx+2, 442, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
-		icon(img, wcat(a.wGlance.Current.Code), x+8, 394, 48)
-		text(img, mx, 474, version, face(false, tTiny), black) // which release is on the wall, without ssh
+		// İstanbul sits just above the version line at the foot of the rail, which follows the passage band
+		ty := min(max(band-38, 442), 470)
+		text(img, mx, ty-76, a.cfg.Places[0].Name, face(true, tMid), black)
+		x = text(img, tx+2, ty, fmt.Sprintf("%d°", round(a.wGlance.Current.Temp)), face(true, 68), black)
+		icon(img, wcat(a.wGlance.Current.Code), x+8, ty-48, 48)
+		if band-12 >= ty+22 { // a very long passage leaves no room: drop the version, not the weather
+			text(img, mx, band-12, version, face(false, tTiny), black) // which release is on the wall, without ssh
+		}
 
 		// right pane, top: next 5 hours
 		px0 := rail + 18

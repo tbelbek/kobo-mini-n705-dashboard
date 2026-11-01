@@ -18,7 +18,7 @@ var quotesTSV string
 
 type Quote struct{ Text, Author, Work string }
 
-// quoteFace: the one-line passage band's face (not on the calendar screen; kept with the pool).
+// quoteFace: the one-line passage band along the bottom of the screen.
 func quoteFace() font.Face { return face(false, 22) }
 
 var quotes = func() []Quote {

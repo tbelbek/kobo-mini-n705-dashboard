@@ -2,13 +2,12 @@ package main
 
 // The one screen: calendar first. Left: the month, Göteborg (or wherever the device is) now.
 // Right: the selected day and everything after it, one line per event, over the next hours.
-// SMHI warnings ride in the header (nav).
+// SMHI warnings ride in the header (nav); a passage runs along the bottom.
 
 import (
 	"fmt"
 	"image"
 	"image/color"
-	"os"
 	"time"
 )
 
@@ -17,25 +16,9 @@ const (
 	rx    = split + 16
 )
 
+// drawMain: header; month over the weather now (left); the list over the next hours (right);
+// today's passage on one line along the bottom.
 func (a *App) drawMain(img *image.Gray) {
-	if os.Getenv("QBAND") != "" { // PROTO
-		a.drawMainQ(img)
-		return
-	}
-	a.nav(img)
-	a.monthNav(img, image.Rect(mx, 54, W-mx, 100))
-	fill(img, image.Rect(mx, 102, W-mx, 104), black)
-	fill(img, image.Rect(split+6, 104, split+8, H), black)
-	a.dayGrid(img, image.Rect(mx, 104, split, 464), a.month, 6)
-	fill(img, image.Rect(mx, 468, split, 470), black)
-	a.drawNow(img, 470)
-	a.drawAgenda(img, image.Rect(rx, 108, W-mx, 534), 42)
-	fill(img, image.Rect(rx, 538, W-mx, 540), black)
-	a.drawHours(img, rx, 540, 4)
-}
-
-// PROTO: the same screen over a one-line passage band along the bottom (48 px).
-func (a *App) drawMainQ(img *image.Gray) {
 	a.nav(img)
 	a.monthNav(img, image.Rect(mx, 54, W-mx, 100))
 	fill(img, image.Rect(mx, 102, W-mx, 104), black)

@@ -28,7 +28,7 @@ Type sizes come from viewing distance, not taste. At 200 ppi one pixel is 0.127 
 
 The device is asleep most of the time and the last frame stays on the panel (e-ink needs no power to hold it).
 
-- Every `REFRESH_MIN` (60 by default) the RTC alarm wakes it. It brings Wi-Fi up, fetches the weather (calendars every `CAL_REFRESH_MIN`, 240 by default), redraws and suspends again.
+- Every `REFRESH_MIN` (120 by default: on battery, each wake costs a Wi-Fi association) the RTC alarm wakes it. It brings Wi-Fi up, fetches the weather (calendars every `CAL_REFRESH_MIN`, 240 by default), redraws and suspends again.
 - **Quiet hours** (`QUIET`, 23-6 by default; `QUIET=off` disables them): no timed wakes at night. The alarm is set straight to 06:00, which saves a third of the daily Wi-Fi associations.
 - The **power button** wakes it for `AWAKE_SEC` (120) of touch use. Pressing it while awake puts it to sleep.
 - Touch can't wake the Mini from suspend: only the keypad and USB are wakeup sources.

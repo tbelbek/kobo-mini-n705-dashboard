@@ -66,7 +66,7 @@ func loadConfig(path string) Config {
 		MaxX:          PW,
 		MaxY:          PH,
 		Rotate:        "cw",
-		RefreshMin:    60, // Open-Meteo is hourly anyway; each wake costs a Wi-Fi association
+		RefreshMin:    120, // battery first: each wake costs a Wi-Fi association
 		CalRefreshMin: 240,
 		IdleBackMin:   3,
 		WifiIdleMin:   10,

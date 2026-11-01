@@ -20,7 +20,7 @@ TZ=Europe/Stockholm
 #WARN_REGION=Västra Götaland
 
 # Refresh: weather (and wake-up) every N minutes, calendars every M minutes.
-REFRESH_MIN=60
+REFRESH_MIN=120
 CAL_REFRESH_MIN=240
 
 # Power: suspend between refreshes; the RTC alarm or the power button wakes it.

@@ -12,7 +12,7 @@ It runs as a single Go binary on the Alpine Linux base that [InkBox / Quill OS](
 
 One screen, calendar first:
 
-- **The month** on the left, Monday first: bars under a date mark your own events, red days are shaded, today is inverted. Tap a day to select it; arrows change the month, "Bugün" goes back to today.
+- **The month** on the left, Monday first: bars under a date mark your own events, red days (public holidays and Sundays, as on Swedish calendars) are shaded, today is inverted. Tap a day to select it; arrows change the month, "Bugün" goes back to today.
 - **The list** on the right: the selected day and every event after it, one line each (`Cmt 7  14:00  Bahar Ece Basketbol`), paged. Sources are your private ICS links plus Swedish public holidays.
 - **The weather now** under the month: the home city with a large temperature and four short lines beside it: place, feels-like with the day's min/max (tomorrow's after 17:00, marked `yarın`), wind, and the next sunset or sunrise (`☀↓16:28`). Under the list, a thin strip with the next four hours. Both come from the [SMHI](https://opendata.smhi.se) point forecast (no API key; SMHI only covers the Nordics).
 - **Official SMHI warnings** in the top bar, right of the date and ISO week, on one line: `Turuncu: şiddetli yağmur · Sarı: kuvvetli rüzgar`, shortened to `Turuncu: yağmur · Sarı: rüzgar` (and the month name to `Kas`) when space runs out.

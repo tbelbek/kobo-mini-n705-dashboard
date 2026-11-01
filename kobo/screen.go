@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"os"
 	"time"
 )
 
@@ -17,6 +18,10 @@ const (
 )
 
 func (a *App) drawMain(img *image.Gray) {
+	if os.Getenv("QBAND") != "" { // PROTO
+		a.drawMainQ(img)
+		return
+	}
 	a.nav(img)
 	a.monthNav(img, image.Rect(mx, 54, W-mx, 100))
 	fill(img, image.Rect(mx, 102, W-mx, 104), black)
@@ -27,6 +32,27 @@ func (a *App) drawMain(img *image.Gray) {
 	a.drawAgenda(img, image.Rect(rx, 108, W-mx, 534), 42)
 	fill(img, image.Rect(rx, 538, W-mx, 540), black)
 	a.drawHours(img, rx, 540, 4)
+}
+
+// PROTO: the same screen over a one-line passage band along the bottom (48 px).
+func (a *App) drawMainQ(img *image.Gray) {
+	a.nav(img)
+	a.monthNav(img, image.Rect(mx, 54, W-mx, 100))
+	fill(img, image.Rect(mx, 102, W-mx, 104), black)
+	fill(img, image.Rect(split+6, 104, split+8, 550), black)
+	a.dayGrid(img, image.Rect(mx, 104, split, 420), a.month, 6)
+	fill(img, image.Rect(mx, 424, split, 426), black)
+	a.drawNow(img, 426)
+	a.drawAgenda(img, image.Rect(rx, 108, W-mx, 488), 42)
+	fill(img, image.Rect(rx, 492, W-mx, 494), black)
+	a.drawHours(img, rx, 494, 4)
+	fill(img, image.Rect(mx, 550, W-mx, 552), black)
+	if q, ok := quoteFor(clock().In(a.loc)); ok {
+		tiny := face(false, tTiny)
+		text(img, mx, 574, ellipsis(quoteFace(), "“"+q.Text+"”", W-2*mx), quoteFace(), black)
+		attr := ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx)
+		text(img, W-mx-textW(tiny, attr), 594, attr, tiny, black)
+	}
 }
 
 // ---------------------------------------------------------------- calendar data
@@ -103,7 +129,7 @@ func (a *App) monthNav(img *image.Gray, r image.Rectangle) {
 }
 
 // dayGrid: the month as weeks x 7 cells, Monday first. Bars under a number = own events (max 3),
-// grey = red day, inverted = today, frame = selected; a tap selects the day.
+// grey = red day (holidays and Sundays), inverted = today, frame = selected; a tap selects the day.
 func (a *App) dayGrid(img *image.Gray, r image.Rectangle, month time.Time, weeks int) {
 	const head = 26
 	cw, ch := r.Dx()/7, (r.Dy()-head)/weeks
@@ -127,6 +153,7 @@ func (a *App) dayGrid(img *image.Gray, r image.Rectangle, month time.Time, weeks
 			}
 			red = red || e.Tag == "red"
 		}
+		red = red || d.Weekday() == time.Sunday // a röd dag, as on Swedish calendars
 		fg := color.Gray{0}
 		switch {
 		case d.Equal(today):
@@ -157,10 +184,10 @@ func (a *App) dayGrid(img *image.Gray, r image.Rectangle, month time.Time, weeks
 
 // ---------------------------------------------------------------- agenda
 
-// dateCol: "Cmt 7", or "Pzt 1 Ara" once the list has left the selected month.
+// dateCol: "Cmt 7", or "1 Oca" once the list has left the selected month.
 func (a *App) dateCol(d time.Time) string {
 	if d.Month() != a.sel.Month() {
-		return fmt.Sprintf("%s %d %s", trDays[d.Weekday()], d.Day(), short(trMonths[d.Month()]))
+		return fmt.Sprintf("%d %s", d.Day(), short(trMonths[d.Month()]))
 	}
 	return dayLabel(d)
 }
@@ -179,7 +206,7 @@ func timeCol(e Event) string {
 // day (only where it changes) · time · title. Paged; a tap on a line selects its day.
 func (a *App) drawAgenda(img *image.Gray, r image.Rectangle, rowH int) {
 	bold, tf, tm := face(true, 20), face(true, 22), face(false, tTiny)
-	const dateW, timeW = 78, 54
+	const dateW, timeW = 76, 62
 	type row struct {
 		it    agItem
 		empty bool
@@ -249,8 +276,8 @@ func (a *App) drawNow(img *image.Gray, y int) {
 	}
 	g, h := a.wDetail.Current, a.wDetail.Hourly
 	small, bold, tiny := face(false, tSmall), face(true, tSmall), face(false, tTiny)
-	const tx = 24 // the bezel overlaps the panel's left edge
-	lx := max(text(img, tx, y+114, fmt.Sprintf("%d°", round(g.Temp)), face(true, 96), black)+16, 168)
+	const tx = 24                                                                                    // the bezel overlaps the panel's left edge
+	lx := max(text(img, tx, y+98, fmt.Sprintf("%d°", round(g.Temp)), face(true, 96), black)+16, 168) // centred on the four lines
 	x := text(img, lx, y+28, a.place.Name, bold, black)
 	icon(img, wcat(g.Code), x+8, y+4, 28)
 	if a.wErr != nil && !a.weatherAt.IsZero() { // last fetch failed: how old these numbers are

@@ -349,13 +349,9 @@ func (a *App) nav(img *image.Gray) {
 		stW = max(stW, textW(fs, p))
 	}
 
-	// date without the year, ISO week as "W44" (Sunday afternoon the calendar already shows next week)
+	// date without the year, ISO week as "W44"
 	_, week := now.ISOWeek()
 	wk := fmt.Sprintf("  ·  W%d", week)
-	if now.Weekday() == time.Sunday && now.Hour() >= 12 {
-		_, nw := now.AddDate(0, 0, 7).ISOWeek()
-		wk = fmt.Sprintf("  ·  W%d+%d", week, nw)
-	}
 	date := fmt.Sprintf("%d %s, %s", now.Day(), trMonths[now.Month()], trDaysLong[now.Weekday()])
 	room := wr.Min.X - 8 - stW - 16 - 232
 	for _, sz := range []float64{28, 26, 24, 22} {
@@ -385,41 +381,25 @@ func hourLabel(h string) string {
 	return h
 }
 
-// weekEvents: today through Sunday (Sunday afternoon: through next Sunday); today's past timed events dropped.
-func (a *App) weekEvents(now time.Time) (today time.Time, evs []Event) {
-	today = midnight(now, a.loc)
-	end := today.AddDate(0, 0, (7-int(today.Weekday()))%7)
-	if today.Weekday() == time.Sunday && now.Hour() >= 12 {
-		end = today.AddDate(0, 0, 7)
-	}
-	for _, e := range a.cal.Events(today, end, a.loc) {
-		if !e.AllDay && !e.Multi() && e.Day().Equal(today) && e.Start.Before(now) {
-			continue
-		}
-		evs = append(evs, e)
-	}
-	return today, evs
-}
-
 // Layout for a fridge in landscape, sized by viewing distance (1 px = 0.127 mm, Go cap height = 0.72 em):
 //
 //	hero  140 px  Göteborg now, read from 2 m (cap 101 px = 22 arcmin; ISO 9241-303 min 16', preferred 20-22')
 //	large  52 px  temperatures, read from 1 m (cap 37 px = 16')
 //	mid    30 px  titles, city names: 1 m at road-sign legibility (cap 22 px)
-//	small  24 px  details and the passage, read up close
+//	small  24 px  details, read up close (the passage: 22 px, 25 px leading)
 //	tiny   18 px  status
 const (
 	mx                                 = 16 // side margin
 	rail                               = 262
 	tHero, tLarge, tMid, tSmall, tTiny = 140, 52, 30, 24, 18
-	quoteLH                            = 27
+	quoteLH                            = 25
 )
 
 // quoteFace is shared with the fit test: upright, not italic, reads better from a step away.
-func quoteFace() font.Face { return face(false, tSmall) }
+func quoteFace() font.Face { return face(false, 22) }
 
 // drawDash: header; left rail with both cities; right pane with the next 5 hours over warnings
-// and this week's events; a bottom band as tall as today's passage.
+// and the next 10 days' events; a bottom band as tall as today's passage.
 func (a *App) drawDash(img *image.Gray) {
 	a.nav(img)
 	small, tiny := face(false, tSmall), face(false, tTiny)
@@ -433,8 +413,8 @@ func (a *App) drawDash(img *image.Gray) {
 		qLines = qLines[:min(4, len(qLines))]
 		// attribution shares the last line when it fits, else gets its own row; all ends at y=588
 		attr = ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx)
-		if textW(small, qLines[len(qLines)-1])+textW(tiny, attr)+24 > W-2*mx {
-			own = 22
+		if textW(quoteFace(), qLines[len(qLines)-1])+textW(tiny, attr)+24 > W-2*mx {
+			own = 20
 		}
 	}
 	band := 588 - len(qLines)*quoteLH - own - 2
@@ -513,11 +493,14 @@ func (a *App) drawDash(img *image.Gray) {
 		cw := (W - mx - px0) / 5
 		for i := 1; i <= 5 && i < len(h.Time); i++ {
 			cx := px0 + (i-1)*cw + cw/2
-			centerText(img, hourLabel(h.Time[i]), small, cx, 86)
-			icon(img, wcat(at(h.Code, i)), cx-24, 92, 48)
-			centerText(img, fmt.Sprintf("%d°", round(atf(h.Temp, i))), face(true, tLarge), cx, 186)
-			centerText(img, fmt.Sprintf("his %d°", round(atf(h.Feels, i))), small, cx, 214)
-			centerText(img, fmt.Sprintf("%s %d", compass(atf(h.WindDir, i)), round(atf(h.Wind, i))), small, cx, 240)
+			// "10:00" and its icon on one row (a bare "10" beside an icon reads as a temperature); 20 px so both fit 100 px
+			hf, lbl := face(false, 20), hourLabel(h.Time[i])
+			lw := textW(hf, lbl) + 4 + 40
+			text(img, cx-lw/2, 90, lbl, hf, black)
+			icon(img, wcat(at(h.Code, i)), cx-lw/2+lw-40, 62, 40)
+			centerText(img, fmt.Sprintf("%d°", round(atf(h.Temp, i))), face(true, tLarge), cx, 142)
+			centerText(img, fmt.Sprintf("his %d°", round(atf(h.Feels, i))), small, cx, 168)
+			centerText(img, fmt.Sprintf("%s %d", compass(atf(h.WindDir, i)), round(atf(h.Wind, i))), small, cx, 193)
 		}
 	} else {
 		for i, l := range wrap(face(true, tMid), "Hava durumu alınamadı", rail-2*mx) {
@@ -525,64 +508,52 @@ func (a *App) drawDash(img *image.Gray) {
 		}
 	}
 	px0 := rail + 18
-	fill(img, image.Rect(px0, 252, W-mx, 254), black)
+	fill(img, image.Rect(px0, 204, W-mx, 206), black)
 
-	// right pane, below: official SMHI warnings, then this week's events
-	y := 260
-	for _, w := range a.warnings {
+	// right pane, below: official SMHI warnings, then the next 10 days
+	y := 212
+	// always one line: "⚠ Turuncu – şiddetli yağmur · Sarı – kuvvetli rüzgar", reasons cut to
+	// "Turuncu – yağmur · Sarı – rüzgar" when that won't fit, then "+N" for what still doesn't
+	if len(a.warnings) > 0 {
+		bold := face(true, tSmall)
+		seg := func(w Warning, short bool) (string, string) {
+			if short {
+				return warnLabel[w.Level] + " – ", shortReason(w.Text)
+			}
+			return warnLabel[w.Level] + " – ", w.Text
+		}
+		full := px0 + 38
+		for i, w := range a.warnings {
+			l, r := seg(w, false)
+			full += textW(bold, l) + textW(small, r)
+			if i > 0 {
+				full += textW(small, " · ")
+			}
+		}
+		short := full > W-mx
 		icon(img, "warn", px0, y+6, 28)
-		x := text(img, px0+38, y+28, warnLabel[w.Level], face(true, tSmall), black)
-		text(img, x+10, y+28, ellipsis(small, w.Text, W-mx-x-10), small, black)
+		x := px0 + 38
+		for i, w := range a.warnings {
+			l, r := seg(w, short)
+			sep := ""
+			if i > 0 {
+				sep = " · "
+			}
+			more := 0 // room for "+N" if this is not the last warning
+			if i < len(a.warnings)-1 {
+				more = textW(bold, fmt.Sprintf(" +%d", len(a.warnings)-i-1))
+			}
+			if i > 0 && x+textW(small, sep)+textW(bold, l)+textW(small, r)+more > W-mx {
+				text(img, x, y+28, fmt.Sprintf(" +%d", len(a.warnings)-i), bold, black)
+				break
+			}
+			x = text(img, x, y+28, sep, small, black)
+			x = text(img, x, y+28, l, bold, black)
+			x = text(img, x, y+28, ellipsis(small, r, W-mx-x), small, black)
+		}
 		y += 40
 	}
-	today, evs := a.weekEvents(now)
-	const tall, flat, moreH = 66, 44, 30
-	limit := band - 6 // keep text off the band rule
-	row := tall       // two-line rows when they all fit, otherwise one line each
-	if y+len(evs)*tall > limit {
-		row = flat
-	}
-	title := face(true, tMid)
-	for i, e := range evs {
-		if y+row > limit || i < len(evs)-1 && y+row+moreH > limit {
-			text(img, px0+16, y+22, fmt.Sprintf("+%d etkinlik daha", len(evs)-i), face(false, 20), black)
-			a.tap(image.Rect(px0, y, W, y+48), func() { a.openDay(today) })
-			break
-		}
-		d := e.Day()
-		if d.Before(today) {
-			d = today // ongoing multi-day event
-		}
-		when := evTime(e)
-		if row == tall {
-			if !e.Multi() {
-				when = fmt.Sprintf("%s %d %s · %s", trDays[d.Weekday()], d.Day(), trMonths[d.Month()], when)
-			}
-			if e.Tag == "red" {
-				when += " · RESMİ TATİL"
-			}
-			fill(img, image.Rect(px0, y+4, px0+5, y+row-10), black)
-			text(img, px0+16, y+22, ellipsis(small, when, W-mx-px0-16), small, black)
-			text(img, px0+16, y+54, ellipsis(title, e.Summary, W-mx-px0-16), title, black)
-		} else {
-			if !e.Multi() {
-				when = fmt.Sprintf("%s %d · %s", trDays[d.Weekday()], d.Day(), when)
-			}
-			if e.Tag == "red" {
-				when += " · tatil"
-			}
-			fill(img, image.Rect(px0, y+6, px0+5, y+row-6), black)
-			wx := W - mx - textW(small, when)
-			text(img, px0+16, y+32, ellipsis(title, e.Summary, wx-px0-28), title, black) // title first, day/time right
-			text(img, wx, y+32, when, small, black)
-		}
-		day := d
-		a.tap(image.Rect(px0, y, W, y+row), func() { a.openDay(day) })
-		y += row
-	}
-	if len(evs) == 0 {
-		text(img, px0, y+30, "Bu hafta başka etkinlik yok", small, black)
-	}
+	a.drawCal(img, now, y, band-6)
 
 	// bottom band: the passage (24 px, up to 4 lines)
 	fill(img, image.Rect(mx, band, W-mx, band+2), black)

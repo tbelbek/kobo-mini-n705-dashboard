@@ -223,23 +223,37 @@ type Warning struct {
 	Text  string // reason, in Turkish when known
 }
 
-var warnLabel = map[string]string{"YELLOW": "SARI UYARI", "ORANGE": "TURUNCU UYARI", "RED": "KIRMIZI UYARI"}
+var warnLabel = map[string]string{"YELLOW": "Sarı", "ORANGE": "Turuncu", "RED": "Kırmızı"}
+
+// warnReasons: SMHI's English event name -> Turkish reason, and the bare noun for a crowded line
+// (the level already says how bad).
+var warnReasons = []struct{ key, tr, short string }{
+	{"thunder", "gök gürültülü fırtına", "fırtına"}, {"wind", "kuvvetli rüzgar", "rüzgar"}, {"snow", "yoğun kar", "kar"},
+	{"rain", "şiddetli yağmur", "yağmur"}, {"fire", "yangın riski", "yangın"}, {"temperature", "aşırı sıcak", "sıcak"},
+	{"heat", "aşırı sıcak", "sıcak"}, {"cold", "aşırı soğuk", "soğuk"}, {"ice", "buzlanma", "buzlanma"}, {"slipp", "buzlanma", "buzlanma"},
+	{"flood", "taşkın", "taşkın"}, {"high flow", "taşkın", "taşkın"}, {"water level", "yüksek su seviyesi", "su seviyesi"},
+	{"shortage", "su kıtlığı", "su kıtlığı"}, {"fog", "yoğun sis", "sis"},
+}
 
 // reasonTR maps SMHI's English event name to a short Turkish reason.
 func reasonTR(en string) string {
 	l := strings.ToLower(en)
-	for _, m := range []struct{ key, tr string }{
-		{"thunder", "gök gürültülü fırtına"}, {"wind", "kuvvetli rüzgar"}, {"snow", "yoğun kar"},
-		{"rain", "şiddetli yağmur"}, {"fire", "yangın riski"}, {"temperature", "aşırı sıcak"},
-		{"heat", "aşırı sıcak"}, {"cold", "aşırı soğuk"}, {"ice", "buzlanma"}, {"slipp", "buzlanma"},
-		{"flood", "taşkın"}, {"high flow", "taşkın"}, {"water level", "yüksek su seviyesi"},
-		{"shortage", "su kıtlığı"}, {"fog", "yoğun sis"},
-	} {
+	for _, m := range warnReasons {
 		if strings.Contains(l, m.key) {
 			return m.tr
 		}
 	}
 	return en
+}
+
+// shortReason: "şiddetli yağmur" -> "yağmur"; unknown text unchanged.
+func shortReason(tr string) string {
+	for _, m := range warnReasons {
+		if m.tr == tr {
+			return m.short
+		}
+	}
+	return tr
 }
 
 // fetchWarnings returns SMHI's impact-based warnings (yellow and up) covering region,

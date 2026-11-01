@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -43,5 +44,28 @@ func TestSunTimes(t *testing.T) {
 		if !near(rise, c.rise) || !near(set, c.set) {
 			t.Errorf("%s: got %s-%s, want %s-%s", c.day, rise.Format("15:04"), set.Format("15:04"), c.rise, c.set)
 		}
+	}
+}
+
+// The dashboard's 10 days: a multi-day event marks every day it covers but is listed once,
+// today's finished event is dropped, nothing past the 10th day shows.
+func TestHorizon(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	raw := "BEGIN:VCALENDAR\r\n" +
+		"BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Stockholm:20261101T080000\r\nSUMMARY:Bitti\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261103\r\nDTEND;VALUE=DATE:20261106\r\nSUMMARY:Kamp\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Stockholm:20261111T100000\r\nSUMMARY:Sonra\r\nEND:VEVENT\r\n" +
+		"END:VCALENDAR\r\n"
+	a := &App{loc: loc, cal: Calendar{raw: map[string]string{"u": raw}}}
+	days := a.horizon(time.Date(2026, 11, 1, 9, 0, 0, 0, loc), 10)
+	var marked []int
+	for _, d := range days {
+		if len(d.Evs) > 0 {
+			marked = append(marked, d.Day.Day())
+		}
+	}
+	items := agendaItems(days)
+	if len(days) != 10 || fmt.Sprint(marked) != "[3 4 5]" || len(items) != 1 || items[0].E.Summary != "Kamp" {
+		t.Fatalf("days %d, marked %v, items %v", len(days), marked, items)
 	}
 }

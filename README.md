@@ -14,8 +14,8 @@ It runs as a single Go binary on the Alpine Linux base that [InkBox / Quill OS](
 
 - A left rail with the current weather for two places: the home city in 140 px type (readable from across the kitchen), with feels-like and wind.
 - The next 5 hours for the home city: temperature, feels-like, wind direction and speed ([SMHI](https://opendata.smhi.se) point forecast, no API key; the second city comes from [Open-Meteo](https://open-meteo.com)). SMHI only covers the Nordics.
-- Official yellow/orange/red warnings from [SMHI](https://www.smhi.se) for a Swedish county, e.g. `SARI UYARI — kuvvetli rüzgar`.
-- Calendar events from today to the end of the week, with the ISO week number. After 12:00 on Sunday it shows the rest of the day plus next week. Sources are your private ICS links plus Swedish public holidays; official red days are shaded.
+- Official yellow/orange/red warnings from [SMHI](https://www.smhi.se) for a Swedish county, on one line, e.g. `Turuncu – şiddetli yağmur · Sarı – kuvvetli rüzgar` (shortened to `Turuncu – yağmur · Sarı – rüzgar` when that won't fit).
+- The next 10 days: the upcoming events in full (date, time, title), beside a 2×5 strip of all ten dates with the busy ones marked and today framed. Sources are your private ICS links plus Swedish public holidays; official red days are shaded.
 - A calendar view: the month as a grid of dates with one mark per event (red days shaded, today ringed), and a side panel with the chosen day's events in full: time, title, place and notes. Multi-day events span their days.
 - A top bar with today's date and ISO week (`30 Ekim, Cuma · W44`), the next scheduled update and battery level, Wi-Fi state (tap to pin it on) and a refresh button that also checks for a new release.
 - One uplifting passage a day in a band along the bottom: prose from public-domain novels and essays, and verse from public-domain poets, in Turkish (`kobo/quotes.tsv`).

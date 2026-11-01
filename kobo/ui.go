@@ -310,7 +310,7 @@ func (a *App) nav(img *image.Gray) {
 	x := text(img, dx, 34, date, face(true, tSmall), black)
 	x = text(img, x, 34, fmt.Sprintf(" · W%d", week), face(false, tSmall), black)
 	if len(a.warnings) > 0 {
-		a.warnLine(img, x+14, 34, dx+room)
+		a.warnLine(img, x+10, 34, dx+room)
 	}
 	fill(img, image.Rect(0, 50, W, 52), black)
 }

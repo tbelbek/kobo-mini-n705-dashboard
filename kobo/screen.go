@@ -21,9 +21,9 @@ func (a *App) drawMain(img *image.Gray) {
 	a.monthNav(img, image.Rect(mx, 54, W-mx, 100))
 	fill(img, image.Rect(mx, 102, W-mx, 104), black)
 	fill(img, image.Rect(split+6, 104, split+8, H), black)
-	a.dayGrid(img, image.Rect(mx, 104, split, 434), a.month, 6)
-	fill(img, image.Rect(mx, 438, split, 440), black)
-	a.drawNow(img, 440)
+	a.dayGrid(img, image.Rect(mx, 104, split, 464), a.month, 6)
+	fill(img, image.Rect(mx, 468, split, 470), black)
+	a.drawNow(img, 470)
 	a.drawAgenda(img, image.Rect(rx, 108, W-mx, 534), 42)
 	fill(img, image.Rect(rx, 538, W-mx, 540), black)
 	a.drawHours(img, rx, 540, 4)
@@ -240,52 +240,57 @@ func (a *App) drawAgenda(img *image.Gray, r image.Rectangle, rowH int) {
 
 // ---------------------------------------------------------------- weather
 
-// drawNow: under the month, from y: place + icon, the big temperature, and beside it
-// feels-like + the day's range, wind, sunset/sunrise.
+// drawNow: under the month, from y: the big temperature, and beside it three short lines:
+// "Göteborg ☁", "his 8° · 11° / 12°" (tomorrow's range after 17:00 says "yarın"), "GB 18 km/sa", "☀↓16:28".
 func (a *App) drawNow(img *image.Gray, y int) {
 	if a.wDetail == nil {
 		text(img, mx, y+44, "Hava durumu alınamadı", face(true, tMid), black)
 		return
 	}
 	g, h := a.wDetail.Current, a.wDetail.Hourly
-	small, bold := face(false, tSmall), face(true, tSmall)
-	x := text(img, mx, y+30, a.place.Name, bold, black)
-	icon(img, wcat(g.Code), x+8, y+6, 30)
+	small, bold, tiny := face(false, tSmall), face(true, tSmall), face(false, tTiny)
+	const tx = 24 // the bezel overlaps the panel's left edge
+	lx := max(text(img, tx, y+114, fmt.Sprintf("%d°", round(g.Temp)), face(true, 96), black)+16, 168)
+	x := text(img, lx, y+28, a.place.Name, bold, black)
+	icon(img, wcat(g.Code), x+8, y+4, 28)
 	if a.wErr != nil && !a.weatherAt.IsZero() { // last fetch failed: how old these numbers are
 		s := "veri " + a.weatherAt.In(a.loc).Format("15:04")
-		text(img, split-textW(small, s), y+30, s, small, black)
+		text(img, split-textW(tiny, s), y+28, s, tiny, black)
 	}
-	const tx = 24 // the bezel overlaps the panel's left edge
-	tw := text(img, tx, y+138, fmt.Sprintf("%d°", round(g.Temp)), face(true, 96), black)
-	lx := max(tw+18, 176)
-	x = text(img, lx, y+72, fmt.Sprintf("his %d°", round(atf(h.Feels, 0))), small, black)
+	x = text(img, lx, y+56, fmt.Sprintf("his %d°", round(atf(h.Feels, 0))), small, black)
 	if w := a.wDetail; w.Span != "" {
-		x = text(img, x+16, y+72, fmt.Sprintf("%d° / %d°", round(w.Lo), round(w.Hi)), bold, black)
-		if tiny := face(false, tTiny); x+6+textW(tiny, w.Span) <= split {
-			text(img, x+6, y+72, w.Span, tiny, black)
+		x = text(img, x, y+56, " · ", small, black)
+		x = text(img, x, y+56, fmt.Sprintf("%d° / %d°", round(w.Lo), round(w.Hi)), bold, black)
+		if w.Span == "yarın" && x+6+textW(tiny, w.Span) <= split {
+			text(img, x+6, y+56, w.Span, tiny, black)
 		}
 	}
-	text(img, lx, y+104, fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0))), small, black)
-	if s := a.sunLine(); s != "" {
-		text(img, lx, y+136, s, small, black)
+	text(img, lx, y+84, fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0))), small, black)
+	if up, t, ok := a.sun(); ok {
+		arrow := "↓"
+		if up {
+			arrow = "↑"
+		}
+		icon(img, "sun", lx-2, y+92, 26)
+		text(img, lx+28, y+112, arrow+t, small, black)
 	}
 }
 
-// sunLine: today's sunset, or the next sunrise before dawn and after dusk.
-func (a *App) sunLine() string {
+// sun: the next sunrise (up) or today's sunset.
+func (a *App) sun() (up bool, at string, ok bool) {
 	now, p := clock().In(a.loc), a.place
 	rise, set, ok := sunTimes(p.Lat, p.Lon, now)
 	switch {
 	case !ok:
-		return ""
+		return false, "", false
 	case now.Before(rise):
-		return "gün doğumu " + rise.Format("15:04")
+		return true, rise.Format("15:04"), true
 	case now.After(set):
 		if r2, _, ok2 := sunTimes(p.Lat, p.Lon, now.AddDate(0, 0, 1)); ok2 {
-			return "gün doğumu " + r2.Format("15:04")
+			return true, r2.Format("15:04"), true
 		}
 	}
-	return "gün batımı " + set.Format("15:04")
+	return false, set.Format("15:04"), true
 }
 
 // drawHours: the next n hours in one thin strip from (x, y): time over icon + temperature.
@@ -303,23 +308,21 @@ func (a *App) drawHours(img *image.Gray, x, y, n int) {
 	}
 }
 
-// warnLine: every warning on one line from x to right at baseline y, shortened step by step:
-// "Turuncu – şiddetli yağmur", "Turuncu – yağmur", "Turuncu yağmur"; what still won't fit is "+N".
+// warnLine: every warning on one line from x to right at baseline y: "Turuncu: şiddetli yağmur",
+// shortened to "Turuncu: yağmur" when they don't all fit; what still won't fit is "+N".
 func (a *App) warnLine(img *image.Gray, x, y, right int) {
 	small, bold := face(false, tSmall), face(true, tSmall)
 	icon(img, "warn", x, y-22, 28)
-	x0 := x + 38
+	x0 := x + 32
 	seg := func(w Warning, form int) (string, string) {
 		switch form {
 		case 0:
-			return warnLabel[w.Level] + " – ", w.Text
-		case 1:
-			return warnLabel[w.Level] + " – ", shortReason(w.Text)
+			return warnLabel[w.Level] + ": ", w.Text
 		}
-		return warnLabel[w.Level] + " ", shortReason(w.Text)
+		return warnLabel[w.Level] + ": ", shortReason(w.Text)
 	}
 	form := 0
-	for ; form < 2; form++ {
+	for ; form < 1; form++ {
 		n := x0
 		for i, w := range a.warnings {
 			l, r := seg(w, form)

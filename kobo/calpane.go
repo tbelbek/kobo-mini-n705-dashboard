@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"image/color"
 	"time"
 )
 
@@ -81,7 +80,7 @@ func subLine(it agItem, today time.Time) string {
 
 // drawCal fills x rail+18..W-mx, y top..limit. Left: the next events as date line + 30 px title
 // (one line each once a card no longer fits). Right: all ten days as 2 columns x 5 rows, read
-// top-down (bold + tick = something on, grey = red day, thick frame = today).
+// top-down (bold + tick = own plans, grey cell = red day, thick frame = today).
 func (a *App) drawCal(img *image.Gray, now time.Time, top, limit int) {
 	const card, line, cw = 66, 44, 94
 	px0 := rail + 18
@@ -116,24 +115,27 @@ func (a *App) drawCal(img *image.Gray, now time.Time, top, limit int) {
 	for i, d := range days {
 		x, y := sx+(i/5)*cw, top+(i%5)*ch
 		r := image.Rect(x, y, x+cw, y+ch)
+		busy, red := false, false
+		for _, e := range d.Evs {
+			busy = busy || e.Tag == "cal" // own plans; observances only show as cards
+			red = red || e.Tag == "red"
+		}
+		if red { // e-ink can't do red: shade the cell, as in the month view
+			fill(img, r, shade)
+		}
 		box(img, r, 1, black)
 		if i == 0 {
 			box(img, r.Inset(1), 3, black)
 		}
-		f, c := small, color.Color(black)
-		if len(d.Evs) > 0 {
+		f := small
+		if busy {
 			f = bold
 			if ch >= 50 { // a short cell has no room under the label: bold alone marks it
 				fill(img, image.Rect(x+cw/2-16, y+ch-9, x+cw/2+16, y+ch-5), black)
 			}
 		}
-		for _, e := range d.Evs {
-			if e.Tag == "red" {
-				c = shade
-			}
-		}
 		s := dayLabel(d.Day)
-		text(img, x+cw/2-textW(f, s)/2, y+ch/2+10, s, f, c)
+		text(img, x+cw/2-textW(f, s)/2, y+ch/2+10, s, f, black)
 		day := d.Day
 		a.tap(r, func() { a.openDay(day) })
 	}

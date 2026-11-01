@@ -405,27 +405,17 @@ func (a *App) drawDash(img *image.Gray) {
 	small, tiny := face(false, tSmall), face(false, tTiny)
 	now := clock().In(a.loc)
 
+	// the passage is one line with its attribution under it, so the band (and the rail above it) never moves
 	q, hasQ := quoteFor(now)
-	var qLines []string
-	attr, own := "", 0
-	if hasQ {
-		qLines = wrap(quoteFace(), "“"+q.Text+"”", W-2*mx)
-		qLines = qLines[:min(4, len(qLines))]
-		// attribution shares the last line when it fits, else gets its own row; all ends at y=588
-		attr = ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx)
-		if textW(quoteFace(), qLines[len(qLines)-1])+textW(tiny, attr)+24 > W-2*mx {
-			own = 20
-		}
-	}
-	band := 588 - len(qLines)*quoteLH - own - 2
+	band := 588 - quoteLH - 20 - 2
 	fill(img, image.Rect(rail, 52, rail+2, band), black)
 
 	// rail: Göteborg huge, its icon beside the city name (as in the hourly row), İstanbul below
 	if a.wDetail != nil && a.wGlance != nil {
 		g, h := a.wDetail.Current, a.wDetail.Hourly
 		mid := face(true, tMid)
-		x := text(img, mx, 88, a.cfg.Places[1].Name, mid, black)
-		icon(img, wcat(g.Code), x+10, 60, 44)
+		x := text(img, mx, 90, a.cfg.Places[1].Name, mid, black)
+		icon(img, wcat(g.Code), x+10, 62, 44)
 		t := fmt.Sprintf("%d°", round(g.Temp))
 		const tx = 24 // the bezel overlaps the panel's left edge: keep the big numbers clear of it
 		hf := face(true, tHero)
@@ -434,11 +424,11 @@ func (a *App) drawDash(img *image.Gray) {
 				break
 			}
 		}
-		text(img, tx, 222, t, hf, black)
+		text(img, tx, 232, t, hf, black)
 		feels := fmt.Sprintf("his %d°", round(atf(h.Feels, 0)))
 		wind := fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0)))
-		text(img, mx, 258, feels, small, black)
-		text(img, mx, 288, wind, small, black)
+		text(img, mx, 272, feels, small, black)
+		text(img, mx, 303, wind, small, black)
 		// right of feels-like: how old the numbers are when the last fetch failed, else the day's range ("bugün 3° / 9°")
 		label, val := "", ""
 		if a.wErr != nil && !a.weatherAt.IsZero() {
@@ -454,28 +444,25 @@ func (a *App) drawDash(img *image.Gray) {
 			}
 			if vw+lw <= free {
 				if lw > 0 {
-					text(img, rail-12-vw-lw, 258, label, tiny, black)
+					text(img, rail-12-vw-lw, 272, label, tiny, black)
 				}
-				text(img, rail-12-vw, 258, val, bold, black)
+				text(img, rail-12-vw, 272, val, bold, black)
 			}
 		}
 
-		// İstanbul (and its rule) sit just above the version line at the foot of the rail, which follows the passage band
-		ty := min(max(band-38, 426), 470)
-		rule := max(ty-106, 300)
-		if rule >= 334 { // room for daylight under the wind line
-			p := a.cfg.Places[1]
-			if rise, set, ok := sunTimes(p.Lat, p.Lon, now); ok {
-				s := "gün batımı " + set.Format("15:04")
-				if now.Before(rise) {
-					s = "gün doğumu " + rise.Format("15:04")
-				} else if now.After(set) {
-					if r2, _, ok2 := sunTimes(p.Lat, p.Lon, now.AddDate(0, 0, 1)); ok2 {
-						s = "gün doğumu " + r2.Format("15:04")
-					}
+		// İstanbul under a rule; fixed rows now that the band below never moves
+		const rule, ty = 356, 470
+		p := a.cfg.Places[1] // daylight under the wind line
+		if rise, set, ok := sunTimes(p.Lat, p.Lon, now); ok {
+			s := "gün batımı " + set.Format("15:04")
+			if now.Before(rise) {
+				s = "gün doğumu " + rise.Format("15:04")
+			} else if now.After(set) {
+				if r2, _, ok2 := sunTimes(p.Lat, p.Lon, now.AddDate(0, 0, 1)); ok2 {
+					s = "gün doğumu " + r2.Format("15:04")
 				}
-				text(img, mx, 320, s, small, black)
 			}
+			text(img, mx, 335, s, small, black)
 		}
 		fill(img, image.Rect(mx, rule, rail-mx, rule+2), black)
 		gl := a.wGlance
@@ -485,9 +472,7 @@ func (a *App) drawDash(img *image.Gray) {
 		if r := fmt.Sprintf("%d° / %d°", round(gl.Lo), round(gl.Hi)); gl.Span != "" && x+12+textW(small, r) <= rail-6 {
 			text(img, x+12, ty, r, small, black)
 		}
-		if band-12 >= ty+22 { // a very long passage leaves no room: drop the version, not the weather
-			text(img, mx, band-12, version, face(false, tTiny), black) // which release is on the wall, without ssh
-		}
+		text(img, mx, band-12, version, face(false, tTiny), black) // which release is on the wall, without ssh
 
 		// right pane, top: next 5 hours
 		px0 := rail + 18
@@ -556,15 +541,12 @@ func (a *App) drawDash(img *image.Gray) {
 	}
 	a.drawCal(img, now, y, band-6)
 
-	// bottom band: the passage (24 px, up to 4 lines)
+	// bottom band: the passage on one line (22 px), its attribution right-aligned below
 	fill(img, image.Rect(mx, band, W-mx, band+2), black)
-	qy := band + 2
-	for _, l := range qLines {
-		qy += quoteLH
-		text(img, mx, qy, l, quoteFace(), black)
-	}
 	if hasQ {
-		text(img, W-mx-textW(tiny, attr), qy+own, attr, tiny, black)
+		text(img, mx, band+2+quoteLH, ellipsis(quoteFace(), "“"+q.Text+"”", W-2*mx), quoteFace(), black)
+		attr := ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx)
+		text(img, W-mx-textW(tiny, attr), 588, attr, tiny, black)
 	}
 }
 

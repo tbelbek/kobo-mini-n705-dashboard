@@ -301,25 +301,25 @@ func (a *App) button(img *image.Gray, r image.Rectangle, label string, active bo
 // nav is the header every view shares: tabs · date + ISO week · next update/battery, Wi-Fi, refresh.
 func (a *App) nav(img *image.Gray) {
 	now := clock().In(a.loc)
-	a.button(img, image.Rect(mx, 4, 104, 52), "Pano", a.view != "month", func() { a.view = "dash" })
-	a.button(img, image.Rect(112, 4, 216, 52), "Takvim", a.view == "month", func() { a.openDay(midnight(now, a.loc)) })
+	a.button(img, image.Rect(mx, 4, 104, 46), "Pano", a.view != "month", func() { a.view = "dash" })
+	a.button(img, image.Rect(112, 4, 216, 46), "Takvim", a.view == "month", func() { a.openDay(midnight(now, a.loc)) })
 
-	ref := image.Rect(W-64, 4, W-mx, 52)
+	ref := image.Rect(W-64, 4, W-mx, 46)
 	if a.busy {
 		fill(img, ref, black) // pressed: instant feedback, the fetch below can take a while
 	} else {
 		box(img, ref, 2, black)
-		icon(img, "refresh", ref.Min.X+9, ref.Min.Y+9, 30)
+		icon(img, "refresh", ref.Min.X+9, ref.Min.Y+6, 30)
 	}
 	// touch targets reach the screen edge: the panel reads edge taps a few px off
-	a.tap(image.Rect(W-72, 0, W, 64), func() {
+	a.tap(image.Rect(W-72, 0, W, 58), func() {
 		a.busy = true
 		a.show()
 		a.forceCal, a.wantUpdate = true, true
 		a.refresh()
 		a.busy = false
 	})
-	wr := image.Rect(W-120, 4, W-72, 52)
+	wr := image.Rect(W-120, 4, W-72, 46)
 	wifi := "wifi"
 	a.shownOnline = online()
 	if !a.shownOnline {
@@ -328,8 +328,8 @@ func (a *App) nav(img *image.Gray) {
 	if a.wifiPinned {
 		box(img, wr, 2, black) // framed = switched on by hand
 	}
-	icon(img, wifi, wr.Min.X+10, 14, 28)
-	a.tap(image.Rect(wr.Min.X-8, 0, W-72, 64), a.toggleWifi)
+	icon(img, wifi, wr.Min.X+10, 11, 28)
+	a.tap(image.Rect(wr.Min.X-8, 0, W-72, 58), a.toggleWifi)
 
 	// next update and battery: small, stacked, left of the Wi-Fi icon
 	var parts []string
@@ -345,7 +345,7 @@ func (a *App) nav(img *image.Gray) {
 	}
 	fs, stW := face(false, tTiny), 0
 	for i, p := range parts[:min(len(parts), 2)] {
-		text(img, wr.Min.X-8-textW(fs, p), 24+i*21, p, fs, black)
+		text(img, wr.Min.X-8-textW(fs, p), 21+i*19, p, fs, black)
 		stW = max(stW, textW(fs, p))
 	}
 
@@ -356,12 +356,12 @@ func (a *App) nav(img *image.Gray) {
 	room := wr.Min.X - 8 - stW - 16 - 232
 	for _, sz := range []float64{28, 26, 24, 22} {
 		if fb, fr := face(true, sz), face(false, sz); textW(fb, date)+textW(fr, wk) <= room {
-			x := text(img, 232, 39, date, fb, black)
-			text(img, x, 39, wk, fr, black)
+			x := text(img, 232, 35, date, fb, black)
+			text(img, x, 35, wk, fr, black)
 			break
 		}
 	}
-	fill(img, image.Rect(0, 56, W, 58), black)
+	fill(img, image.Rect(0, 50, W, 52), black)
 }
 
 func firstOfMonth(t time.Time) time.Time {
@@ -390,9 +390,9 @@ func hourLabel(h string) string {
 //	tiny   18 px  status
 const (
 	mx                                 = 16 // side margin
-	rail                               = 262
 	tHero, tLarge, tMid, tSmall, tTiny = 140, 52, 30, 24, 18
 	quoteLH                            = 25
+	rail                               = 240 // left weather column
 )
 
 // quoteFace is shared with the fit test: upright, not italic, reads better from a step away.
@@ -418,45 +418,52 @@ func (a *App) drawDash(img *image.Gray) {
 		}
 	}
 	band := 588 - len(qLines)*quoteLH - own - 2
-	fill(img, image.Rect(rail, 58, rail+2, band), black)
+	fill(img, image.Rect(rail, 52, rail+2, band), black)
 
-	// rail: Göteborg huge with its icon right beside the number, İstanbul below
+	// rail: Göteborg huge, its icon beside the city name (as in the hourly row), İstanbul below
 	if a.wDetail != nil && a.wGlance != nil {
 		g, h := a.wDetail.Current, a.wDetail.Hourly
-		text(img, mx, 94, a.cfg.Places[1].Name, face(true, tMid), black)
+		mid := face(true, tMid)
+		x := text(img, mx, 88, a.cfg.Places[1].Name, mid, black)
+		icon(img, wcat(g.Code), x+10, 60, 44)
 		t := fmt.Sprintf("%d°", round(g.Temp))
 		const tx = 24 // the bezel overlaps the panel's left edge: keep the big numbers clear of it
 		hf := face(true, tHero)
-		for _, sz := range []float64{tHero, 120, 104} { // "-12°" is wider than "8°"; the icon must stay in the rail
-			if hf = face(true, sz); tx+textW(hf, t)+4+64 <= rail-8 {
+		for _, sz := range []float64{tHero, 120, 104} { // "-12°" is wider than "8°"
+			if hf = face(true, sz); tx+textW(hf, t) <= rail-4 {
 				break
 			}
 		}
-		x := text(img, tx, 234, t, hf, black)
-		icon(img, wcat(g.Code), x+4, 128, 64)
+		text(img, tx, 222, t, hf, black)
 		feels := fmt.Sprintf("his %d°", round(atf(h.Feels, 0)))
 		wind := fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0)))
-		text(img, mx, 274, feels, small, black)
-		text(img, mx, 305, wind, small, black)
-		if a.wErr != nil && !a.weatherAt.IsZero() { // last fetch failed: say how old these numbers are
-			s := "veri " + a.weatherAt.In(a.loc).Format("15:04")
-			text(img, rail-12-textW(small, s), 94, s, small, black)
+		text(img, mx, 258, feels, small, black)
+		text(img, mx, 288, wind, small, black)
+		// right of feels-like: how old the numbers are when the last fetch failed, else the day's range ("bugün 3° / 9°")
+		label, val := "", ""
+		if a.wErr != nil && !a.weatherAt.IsZero() {
+			label, val = "veri", a.weatherAt.In(a.loc).Format("15:04")
+		} else if w := a.wDetail; w.Span != "" {
+			label, val = w.Span, fmt.Sprintf("%d° / %d°", round(w.Lo), round(w.Hi))
 		}
-		// the day's range, right-aligned beside feels-like/wind: coat for the whole day, not just now
-		if w := a.wDetail; w.Span != "" {
-			r := fmt.Sprintf("%d° / %d°", round(w.Lo), round(w.Hi))
-			bold := face(true, tSmall)
-			rw := textW(bold, r)
-			if rail-12-rw >= mx+max(textW(small, feels), textW(small, wind))+12 {
-				text(img, rail-12-textW(small, w.Span), 274, w.Span, small, black)
-				text(img, rail-12-rw, 305, r, bold, black)
+		if bold := face(true, tSmall); val != "" {
+			free := rail - 12 - (mx + textW(small, feels) + 12)
+			vw, lw := textW(bold, val), textW(tiny, label)+6
+			if vw+lw > free {
+				lw = 0 // the value alone, or nothing
+			}
+			if vw+lw <= free {
+				if lw > 0 {
+					text(img, rail-12-vw-lw, 258, label, tiny, black)
+				}
+				text(img, rail-12-vw, 258, val, bold, black)
 			}
 		}
 
 		// İstanbul (and its rule) sit just above the version line at the foot of the rail, which follows the passage band
-		ty := min(max(band-38, 433), 470)
-		rule := max(ty-116, 317)
-		if rule >= 351 { // room for daylight under the wind line
+		ty := min(max(band-38, 426), 470)
+		rule := max(ty-106, 300)
+		if rule >= 334 { // room for daylight under the wind line
 			p := a.cfg.Places[1]
 			if rise, set, ok := sunTimes(p.Lat, p.Lon, now); ok {
 				s := "gün batımı " + set.Format("15:04")
@@ -467,22 +474,16 @@ func (a *App) drawDash(img *image.Gray) {
 						s = "gün doğumu " + r2.Format("15:04")
 					}
 				}
-				text(img, mx, 337, s, small, black)
+				text(img, mx, 320, s, small, black)
 			}
 		}
 		fill(img, image.Rect(mx, rule, rail-mx, rule+2), black)
-		text(img, mx, rule+40, a.cfg.Places[0].Name, face(true, tMid), black)
 		gl := a.wGlance
+		x = text(img, mx, rule+38, a.cfg.Places[0].Name, mid, black)
+		icon(img, wcat(gl.Current.Code), x+10, rule+6, 40)
 		x = text(img, tx+2, ty, fmt.Sprintf("%d°", round(gl.Current.Temp)), face(true, 68), black)
-		r := ""
-		if gl.Span != "" {
-			r = fmt.Sprintf("%d° / %d°", round(gl.Lo), round(gl.Hi))
-		}
-		if r != "" && x+10+textW(small, r) <= rail-8 { // icon above its range, both beside the number
-			icon(img, wcat(gl.Current.Code), x+10, ty-66, 40)
-			text(img, x+10, ty, r, small, black)
-		} else {
-			icon(img, wcat(gl.Current.Code), x+8, ty-48, 48)
+		if r := fmt.Sprintf("%d° / %d°", round(gl.Lo), round(gl.Hi)); gl.Span != "" && x+12+textW(small, r) <= rail-6 {
+			text(img, x+12, ty, r, small, black)
 		}
 		if band-12 >= ty+22 { // a very long passage leaves no room: drop the version, not the weather
 			text(img, mx, band-12, version, face(false, tTiny), black) // which release is on the wall, without ssh
@@ -496,11 +497,11 @@ func (a *App) drawDash(img *image.Gray) {
 			// "10:00" and its icon on one row (a bare "10" beside an icon reads as a temperature); 20 px so both fit 100 px
 			hf, lbl := face(false, 20), hourLabel(h.Time[i])
 			lw := textW(hf, lbl) + 4 + 40
-			text(img, cx-lw/2, 90, lbl, hf, black)
-			icon(img, wcat(at(h.Code, i)), cx-lw/2+lw-40, 62, 40)
-			centerText(img, fmt.Sprintf("%d°", round(atf(h.Temp, i))), face(true, tLarge), cx, 142)
-			centerText(img, fmt.Sprintf("his %d°", round(atf(h.Feels, i))), small, cx, 168)
-			centerText(img, fmt.Sprintf("%s %d", compass(atf(h.WindDir, i)), round(atf(h.Wind, i))), small, cx, 193)
+			text(img, cx-lw/2, 84, lbl, hf, black)
+			icon(img, wcat(at(h.Code, i)), cx-lw/2+lw-40, 56, 40)
+			centerText(img, fmt.Sprintf("%d°", round(atf(h.Temp, i))), face(true, tLarge), cx, 136)
+			centerText(img, fmt.Sprintf("his %d°", round(atf(h.Feels, i))), small, cx, 162)
+			centerText(img, fmt.Sprintf("%s %d", compass(atf(h.WindDir, i)), round(atf(h.Wind, i))), small, cx, 187)
 		}
 	} else {
 		for i, l := range wrap(face(true, tMid), "Hava durumu alınamadı", rail-2*mx) {
@@ -508,10 +509,10 @@ func (a *App) drawDash(img *image.Gray) {
 		}
 	}
 	px0 := rail + 18
-	fill(img, image.Rect(px0, 204, W-mx, 206), black)
+	fill(img, image.Rect(px0, 198, W-mx, 200), black)
 
 	// right pane, below: official SMHI warnings, then the next 10 days
-	y := 212
+	y := 206
 	// always one line: "⚠ Turuncu – şiddetli yağmur · Sarı – kuvvetli rüzgar", reasons cut to
 	// "Turuncu – yağmur · Sarı – rüzgar" when that won't fit, then "+N" for what still doesn't
 	if len(a.warnings) > 0 {

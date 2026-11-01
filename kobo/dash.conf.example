@@ -27,6 +27,8 @@ CAL_REFRESH_MIN=240
 SLEEP=1
 # Stay awake this long after a power-button wake / the last touch.
 AWAKE_SEC=120
+# No timed wakes between these hours (the alarm jumps to the end); QUIET=off to disable.
+#QUIET=23-6
 # Keep Wi-Fi up this long after the last touch (ssh window).
 WIFI_IDLE_MIN=10
 #WIFI_ALWAYS=1

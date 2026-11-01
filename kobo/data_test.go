@@ -89,3 +89,20 @@ func TestConfigPlace(t *testing.T) {
 		t.Fatalf("Göteborg-Stockholm %.0f km", d)
 	}
 }
+
+// Quiet hours 23-6: a wake due at night moves to 06:00, a daytime one stays.
+func TestWakeAt(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	a := &App{loc: loc, cfg: Config{QuietFrom: 23, QuietTo: 6}}
+	at := func(s string) time.Time { v, _ := time.ParseInLocation("2006-01-02 15:04", s, loc); return v }
+	for _, c := range [][2]string{
+		{"2026-11-01 22:40", "2026-11-01 22:40"},
+		{"2026-11-01 23:10", "2026-11-02 06:00"},
+		{"2026-11-02 03:00", "2026-11-02 06:00"},
+		{"2026-11-02 06:00", "2026-11-02 06:00"},
+	} {
+		if got := a.wakeAt(at(c[0])); !got.Equal(at(c[1])) {
+			t.Errorf("%s -> %s, want %s", c[0], got.Format("01-02 15:04"), c[1])
+		}
+	}
+}

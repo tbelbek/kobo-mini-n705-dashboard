@@ -44,6 +44,8 @@ type Config struct {
 	WifiAlways    bool // never switch the radio off (debugging)
 	Sleep         bool // suspend between refreshes (RTC alarm wakes it, so does the power button)
 	AwakeSec      int  // stay awake this long after the last touch / power-button wake
+	QuietFrom     int  // no timed wakes from this hour...
+	QuietTo       int  // ...until this one (local); equal = no quiet hours
 	KeyInput      string
 	WarnRegion    string // SMHI county for official warnings
 	WarnSet       bool   // WARN_REGION in the conf: keep it even if the location says otherwise
@@ -70,6 +72,8 @@ func loadConfig(path string) Config {
 		WifiIdleMin:   10,
 		Sleep:         true,
 		AwakeSec:      120,
+		QuietFrom:     23, // nobody reads the fridge at night: each skipped wake saves a Wi-Fi association
+		QuietTo:       6,
 		KeyInput:      "/dev/input/event0",
 		WarnRegion:    "Västra Götaland",
 		UpdateRepo:    "tbelbek/kobo-mini-n705-dashboard",
@@ -136,6 +140,12 @@ func loadConfig(path string) Config {
 			c.Sleep = b
 		case "AWAKE_SEC":
 			c.AwakeSec = int(num)
+		case "QUIET": // "23-6", or "off"
+			c.QuietFrom, c.QuietTo = 0, 0
+			if f, t, ok := strings.Cut(v, "-"); ok {
+				c.QuietFrom, _ = strconv.Atoi(f)
+				c.QuietTo, _ = strconv.Atoi(t)
+			}
 		case "KEY_INPUT":
 			c.KeyInput = v
 		case "UPDATE_REPO":
@@ -636,7 +646,7 @@ func main() {
 		// Power model: asleep unless someone is using it. Never while ssh'd in or Wi-Fi is pinned.
 		if cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() {
 			sleepNow = false
-			woke := a.sleepUntil(a.updated.Add(refreshEvery))
+			woke := a.sleepUntil(a.wakeAt(a.updated.Add(refreshEvery)))
 			resumed = time.Now()
 			if woke == "timer" {
 				lastTry = time.Now()
@@ -655,6 +665,21 @@ func main() {
 	}
 }
 
+// wakeAt: due, or the end of the quiet hours when due falls inside them.
+func (a *App) wakeAt(due time.Time) time.Time {
+	f, t := a.cfg.QuietFrom, a.cfg.QuietTo
+	l := due.In(a.loc)
+	h := l.Hour()
+	if f == t || !(f < t && h >= f && h < t || f > t && (h >= f || h < t)) {
+		return due
+	}
+	end := time.Date(l.Year(), l.Month(), l.Day(), t, 0, 0, 0, a.loc)
+	if !end.After(l) {
+		end = end.AddDate(0, 0, 1)
+	}
+	return end
+}
+
 // sleepUntil suspends until due (RTC alarm) or the power button. Returns "timer",
 // "button", or "error" when it could not sleep safely.
 func (a *App) sleepUntil(due time.Time) string {
@@ -671,7 +696,7 @@ func (a *App) sleepUntil(due time.Time) string {
 		log.Printf("alarm: %v", err) // never suspend without a way back
 		return "error"
 	}
-	log.Printf("sleep: alarm in %v (next update %s)", d.Round(time.Second), due.In(a.loc).Format("15:04:05"))
+	log.Printf("sleep: alarm in %v (next update %s) %s", d.Round(time.Second), due.In(a.loc).Format("15:04:05"), battery())
 	start := time.Now().Round(0) // wall clock; monotonic time stops in suspend
 	if err := suspend(); err != nil {
 		log.Printf("suspend: %v", err)
@@ -681,7 +706,7 @@ func (a *App) sleepUntil(due time.Time) string {
 	if time.Now().Round(0).After(due.Add(-45 * time.Second)) {
 		woke = "timer"
 	}
-	log.Printf("woke: %s after %v", woke, time.Now().Round(0).Sub(start).Round(time.Second))
+	log.Printf("woke: %s after %v %s", woke, time.Now().Round(0).Sub(start).Round(time.Second), battery())
 	return woke
 }
 

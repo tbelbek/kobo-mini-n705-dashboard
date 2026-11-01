@@ -1,6 +1,6 @@
 package main
 
-// Data side, ported from server.py: Open-Meteo weather, threshold alerts and
+// Data side: where the device is (geojs.io), SMHI weather and warnings, and
 // an ICS reader (DTSTART/DTEND/TZID/RRULE subset, multi-day spans, red days).
 
 import (
@@ -9,7 +9,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -56,35 +55,53 @@ type Weather struct {
 		Wind    []float64 `json:"wind_speed_10m"`
 		WindDir []float64 `json:"wind_direction_10m"`
 	} `json:"hourly"`
-	Daily struct {
-		TMin []float64 `json:"temperature_2m_min"`
-		TMax []float64 `json:"temperature_2m_max"`
-	} `json:"daily"`
 	Span   string  // "bugün" | "yarın": which day Lo/Hi cover; "" = no range
 	Lo, Hi float64 // that day's min / max
 }
 
-// fetchWeather: current conditions from Open-Meteo (the İstanbul glance).
-func fetchWeather(p Place) (*Weather, error) {
-	q := url.Values{}
-	q.Set("latitude", strconv.FormatFloat(p.Lat, 'f', 4, 64))
-	q.Set("longitude", strconv.FormatFloat(p.Lon, 'f', 4, 64))
-	q.Set("timezone", p.TZ)
-	q.Set("current", "temperature_2m,weather_code")
-	q.Set("daily", "temperature_2m_min,temperature_2m_max")
-	q.Set("forecast_days", "1")
-	b, err := get("https://api.open-meteo.com/v1/forecast?" + q.Encode())
-	if err != nil {
-		return nil, err
+// locate: the device's city from its public IP, with region ("Västra Götaland", for SMHI's
+// warnings) and timezone. IP databases disagree about some ISPs (Göteborg one minute, Stockholm
+// the next), so two independent ones must agree within 50 km, else it is an error and the
+// caller keeps what it had.
+func locate() (Place, string, error) {
+	c := &http.Client{Timeout: 5 * time.Second}
+	fetch := func(u string, v any) error {
+		resp, err := c.Get(u)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		return json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(v)
 	}
-	var w Weather
-	if err := json.Unmarshal(b, &w); err != nil {
-		return nil, err
+	var g struct{ City, Region, Timezone, Latitude, Longitude string } // geojs: numbers as strings
+	var w struct {
+		Success             bool
+		Latitude, Longitude float64
 	}
-	if len(w.Daily.TMin) > 0 && len(w.Daily.TMax) > 0 {
-		w.Span, w.Lo, w.Hi = "bugün", w.Daily.TMin[0], w.Daily.TMax[0]
+	if err := fetch("https://get.geojs.io/v1/ip/geo.json", &g); err != nil {
+		return Place{}, "", err
 	}
-	return &w, nil
+	if err := fetch("https://ipwho.is/?fields=success,latitude,longitude", &w); err != nil {
+		return Place{}, "", err
+	}
+	lat, e1 := strconv.ParseFloat(g.Latitude, 64)
+	lon, e2 := strconv.ParseFloat(g.Longitude, 64)
+	if g.City == "" || e1 != nil || e2 != nil || !w.Success {
+		return Place{}, "", fmt.Errorf("incomplete answer")
+	}
+	p := Place{g.City, lat, lon, g.Timezone}
+	if d := km(p, Place{Lat: w.Latitude, Lon: w.Longitude}); d > 50 {
+		return Place{}, "", fmt.Errorf("geojs says %s, ipwho.is %.0f km away", g.City, d)
+	}
+	return p, strings.TrimSuffix(g.Region, " County"), nil
+}
+
+// km between two places (haversine; good enough at city scale)
+func km(a, b Place) float64 {
+	const rad = math.Pi / 180
+	dLat, dLon := (b.Lat-a.Lat)*rad, (b.Lon-a.Lon)*rad
+	h := math.Pow(math.Sin(dLat/2), 2) + math.Cos(a.Lat*rad)*math.Cos(b.Lat*rad)*math.Pow(math.Sin(dLon/2), 2)
+	return 2 * 6371 * math.Asin(math.Sqrt(h))
 }
 
 // smhiWMO maps SMHI's symbol_code (1-27) onto the WMO codes the icons and labels use.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -67,5 +68,24 @@ func TestHorizon(t *testing.T) {
 	items := agendaItems(days)
 	if len(days) != 10 || fmt.Sprint(marked) != "[3 4 5]" || len(items) != 1 || items[0].E.Summary != "Kamp" {
 		t.Fatalf("days %d, marked %v, items %v", len(days), marked, items)
+	}
+}
+
+// Old confs named a second city in PLACE and home in PLACE2: home must be PLACE2, and a conf
+// without any place leaves the default and lets the IP lookup run.
+func TestConfigPlace(t *testing.T) {
+	dir := t.TempDir()
+	old := dir + "/old.conf"
+	os.WriteFile(old, []byte("PLACE=İstanbul\nLAT=41.0082\nLON=28.9784\nTZ1=Europe/Istanbul\nPLACE2=Göteborg\nLAT2=57.7089\nLON2=11.9746\n"), 0o600)
+	if c := loadConfig(old); c.Place.Name != "Göteborg" || c.Place.Lat != 57.7089 || !c.PlaceSet {
+		t.Fatalf("legacy conf: %+v set=%v", c.Place, c.PlaceSet)
+	}
+	none := dir + "/none.conf"
+	os.WriteFile(none, []byte("ICS_URL=file:///x.ics\n"), 0o600)
+	if c := loadConfig(none); c.PlaceSet || !c.Locate || c.Place.Name != "Göteborg" {
+		t.Fatalf("no place: %+v set=%v locate=%v", c.Place, c.PlaceSet, c.Locate)
+	}
+	if d := km(Place{Lat: 57.7089, Lon: 11.9746}, Place{Lat: 59.3293, Lon: 18.0686}); d < 390 || d > 405 {
+		t.Fatalf("Göteborg-Stockholm %.0f km", d)
 	}
 }

@@ -9,12 +9,17 @@ import (
 	"math/rand"
 	"strings"
 	"time"
+
+	"golang.org/x/image/font"
 )
 
 //go:embed quotes.tsv
 var quotesTSV string
 
 type Quote struct{ Text, Author, Work string }
+
+// quoteFace: the one-line passage band's face (not on the calendar screen; kept with the pool).
+func quoteFace() font.Face { return face(false, 22) }
 
 var quotes = func() []Quote {
 	var out []Quote

@@ -4,25 +4,24 @@ A fridge-door e-ink dashboard for the **Kobo Mini (model N705)**: weather, offic
 
 It runs as a single Go binary on the Alpine Linux base that [InkBox / Quill OS](https://github.com/Quill-OS/quill) 2.0 ships for this device. InkBox's own GUI is switched off. The Kobo fetches everything itself, no server or browser needed.
 
-| Dashboard | Calendar |
-|---|---|
-| ![dashboard](docs/img/dashboard.png) | ![calendar](docs/img/month.png) |
+![the calendar screen](docs/img/dashboard.png)
 
 *(Screenshots use the demo calendar in `docs/demo.ics` and sample warnings. The UI language is Turkish.)*
 
 ## What it shows
 
-- A left rail with the current weather for two places: the home city in 140 px type (readable from across the kitchen), with feels-like and wind.
-- The next 5 hours for the home city: temperature, feels-like, wind direction and speed ([SMHI](https://opendata.smhi.se) point forecast, no API key; the second city comes from [Open-Meteo](https://open-meteo.com)). SMHI only covers the Nordics.
-- Official yellow/orange/red warnings from [SMHI](https://www.smhi.se) for a Swedish county, on one line, e.g. `Turuncu – şiddetli yağmur · Sarı – kuvvetli rüzgar` (shortened to `Turuncu – yağmur · Sarı – rüzgar` when that won't fit).
-- The next 10 days: the upcoming events in full (date, time, title), beside a 2×5 strip of all ten dates with the busy ones marked and today framed. Sources are your private ICS links plus Swedish public holidays; official red days are shaded.
-- A calendar view: the month as a grid of dates with one mark per event (red days shaded, today ringed), and a side panel with the chosen day's events in full: time, title, place and notes. Multi-day events span their days.
-- A top bar with today's date and ISO week (`30 Ekim, Cuma · W44`), the next scheduled update and battery level, Wi-Fi state (tap to pin it on) and a refresh button that also checks for a new release.
-- One uplifting passage a day on a single line along the bottom: prose from public-domain novels and essays, and verse from public-domain poets, in Turkish (`kobo/quotes.tsv`).
+One screen, calendar first:
+
+- **The month** on the left, Monday first: bars under a date mark your own events, red days are shaded, today is inverted. Tap a day to select it; arrows change the month, "Bugün" goes back to today.
+- **The list** on the right: the selected day and every event after it, one line each (`Cmt 7  14:00  Bahar Ece Basketbol`), paged. Sources are your private ICS links plus Swedish public holidays.
+- **The weather now** under the month: the home city with a large temperature, feels-like, the day's min/max (tomorrow's after 17:00), wind, and sunset or sunrise. Under the list, a thin strip with the next four hours. Both come from the [SMHI](https://opendata.smhi.se) point forecast (no API key; SMHI only covers the Nordics).
+- **Official SMHI warnings** in the top bar, right of the date and ISO week, on one line: `Turuncu – şiddetli yağmur · Sarı – kuvvetli rüzgar`, shortened to `Turuncu yağmur · Sarı rüzgar` (and the month name to `Kas`) when space runs out.
+- **Where it is**, unless the config names a place: the city is looked up from the public IP once a day ([geojs.io](https://www.geojs.io) and [ipwho.is](https://ipwho.is), no key). The two have to agree within 50 km, and a move further than that is only believed when a second lookup an hour later says the same, because IP databases put some ISPs in Stockholm one minute and Göteborg the next. The county found this way also picks the SMHI warnings, unless `WARN_REGION` is set.
+- A top bar with the next scheduled update and battery level, Wi-Fi state (tap to pin it on) and a refresh button that also checks for a new release.
 
 ### Why it looks like this
 
-Type sizes come from viewing distance, not taste. At 200 ppi one pixel is 0.127 mm and Go's capitals are 0.72 of the font size. ISO 9241-303 asks for at least 16 arcminutes of character height, so a temperature read from 2 m needs a font of about 102 px (the home city uses 140) and numbers read from 1 m need 52 px. Everything else is meant for reading up close at 24 px, and status text at 18. The layout follows what the best e-ink dashboards share (TRMNL, Petroff's Kindle weather display, MagInkCal): one dominant number, bands separated by rules, a capped list with "+N more", pure black on white. Go Medium/Bold beat Atkinson Hyperlegible Next and Fira Sans here because they have the largest capitals per pixel; the original Atkinson Hyperlegible has no Turkish İ.
+Type sizes come from viewing distance, not taste. At 200 ppi one pixel is 0.127 mm and Go's capitals are 0.72 of the font size. ISO 9241-303 asks for at least 16 arcminutes of character height, so numbers read from 1 m need about 52 px (the temperature uses 96). Everything else is meant for reading up close at 24 px, and status text at 18. The layout follows what the best e-ink dashboards share (TRMNL, Petroff's Kindle weather display, MagInkCal): one dominant number, bands separated by rules, a capped list with "+N more", pure black on white. Go Medium/Bold beat Atkinson Hyperlegible Next and Fira Sans here because they have the largest capitals per pixel; the original Atkinson Hyperlegible has no Turkish İ.
 
 ## Power model
 
@@ -148,7 +147,7 @@ To publish a release: `tools/release.sh v0.2.0` builds, signs, tags and uploads 
 
 `kobo/quotes.tsv` holds 220 passages: 144 sentences from novels, 38 from essays and philosophy (Stevenson, Chesterton, Emerson, Marcus Aurelius and others), 34 extracts from English poems and 4 from Yunus Emre. Religious lines, including mystic verse about the love of God, are left out on purpose. Each row has the Turkish text, author, work, the original and its source (a Project Gutenberg book number, or `ws:` for a Turkish Wikisource page). Every passage is one line on screen: long ones were cut by hand to a self-contained excerpt (the `en` column holds the matching piece of the original), and verse lines are joined with ` / `. A novel gives at most one passage and a poetry collection at most three. Every author or translator died before 1955, so the originals are public domain in the US, the EU and Turkey. The English translations into Turkish are new; Yunus Emre is shown as written.
 
-The display shows one passage per day, the same one all day. Each year gets its own shuffle, so the order changes every year and nothing repeats until the pool runs out.
+Since v0.7.0 the calendar screen has no room for them and they are not shown; the pool and its checks stay in the repo. When they were on screen it was one passage per day, the same one all day, with a new shuffle each year so nothing repeated until the pool ran out.
 
 How they were chosen: `tools/quote_candidates.py` and `tools/poem_candidates.py` pulled about 11,000 likely lines out of the 6,000 most downloaded books on Project Gutenberg (novels, essays, poetry). An LLM pass kept the joyful, self-contained ones and translated them; a stricter editing pass kept only optimistic lines with real meaning, dropped anything whose source is about grief, and rewrote weak translations. `tools/verify_quotes.py` checks that every original appears word for word in its source, and `go test ./kobo` checks that each passage fits the single line the dashboard gives it.
 
@@ -194,7 +193,7 @@ Write `kobo-mini-backup.img` back to restore the stock Kobo firmware, or the pla
 
 - [InkBox / Quill OS](https://github.com/Quill-OS/quill), whose recovery scripts, init and overlay design made this possible.
 - [FBInk](https://github.com/NiLuJe/FBInk) draws to the panel.
-- Home-city forecast and warnings from [SMHI open data](https://opendata.smhi.se); second-city weather from [Open-Meteo](https://open-meteo.com).
+- Forecast and warnings from [SMHI open data](https://opendata.smhi.se); location from [geojs.io](https://www.geojs.io) and [ipwho.is](https://ipwho.is).
 - [Go fonts](https://go.dev/blog/go-fonts) and [oksvg](https://github.com/srwiley/oksvg).
 
 ## License

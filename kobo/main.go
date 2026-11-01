@@ -25,7 +25,9 @@ import (
 )
 
 type Config struct {
-	Places        [2]Place
+	Place         Place // home: weather and warnings; set in the conf, else found from the IP
+	PlaceSet      bool  // PLACE/LAT/LON in the conf: never relocate
+	Locate        bool  // LOCATE=0 turns the IP lookup off
 	TZ            string
 	Feeds         []string
 	Holiday       string
@@ -44,6 +46,7 @@ type Config struct {
 	AwakeSec      int  // stay awake this long after the last touch / power-button wake
 	KeyInput      string
 	WarnRegion    string // SMHI county for official warnings
+	WarnSet       bool   // WARN_REGION in the conf: keep it even if the location says otherwise
 	UpdateRepo    string // GitHub owner/repo whose signed releases it installs ("" = off)
 	UpdatePubKey  string // hex ed25519 public key that release binaries must verify against
 	UpdateHours   int
@@ -52,10 +55,8 @@ type Config struct {
 
 func loadConfig(path string) Config {
 	c := Config{
-		Places: [2]Place{
-			{"İstanbul", 41.0082, 28.9784, "Europe/Istanbul"},
-			{"Göteborg", 57.7089, 11.9746, "Europe/Stockholm"},
-		},
+		Place:         Place{"Göteborg", 57.7089, 11.9746, "Europe/Stockholm"},
+		Locate:        true,
 		TZ:            "Europe/Stockholm",
 		Holiday:       "https://calendar.google.com/calendar/ical/sv.swedish%23holiday%40group.v.calendar.google.com/public/basic.ics",
 		Input:         "/dev/input/event1",
@@ -82,6 +83,9 @@ func loadConfig(path string) Config {
 		return c
 	}
 	defer f.Close()
+	// PLACE/LAT/LON is home; older confs had a second city in PLACE and home in PLACE2: PLACE2 then wins
+	var p1, p2 Place
+	var set1, set2 bool
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -98,14 +102,14 @@ func loadConfig(path string) Config {
 			c.Holiday = v
 		case "TZ":
 			c.TZ = v
-		case "PLACE", "PLACE2":
-			c.Places[idx(k)].Name = v
-		case "LAT", "LAT2":
-			c.Places[idx(k)].Lat = num
-		case "LON", "LON2":
-			c.Places[idx(k)].Lon = num
-		case "TZ1", "TZ2":
-			c.Places[idx(k)].TZ = v
+		case "PLACE", "LAT", "LON", "TZ1":
+			set1 = true
+			setPlace(&p1, k, v, num)
+		case "PLACE2", "LAT2", "LON2", "TZ2":
+			set2 = true
+			setPlace(&p2, strings.TrimSuffix(k, "2"), v, num)
+		case "LOCATE":
+			c.Locate = b
 		case "INPUT":
 			c.Input = v
 		case "TOUCH_SWAP":
@@ -143,31 +147,53 @@ func loadConfig(path string) Config {
 		case "UPDATE_HOURS":
 			c.UpdateHours = int(num)
 		case "WARN_REGION":
-			c.WarnRegion = v
+			c.WarnRegion, c.WarnSet = v, true
+		}
+	}
+	for _, p := range []struct {
+		p   Place
+		set bool
+	}{{p2, set2}, {p1, set1}} {
+		if p.set {
+			if p.p.TZ == "" {
+				p.p.TZ = c.TZ
+			}
+			c.Place, c.PlaceSet = p.p, true
+			break
 		}
 	}
 	return c
 }
 
-func idx(k string) int {
-	if strings.HasSuffix(k, "2") {
-		return 1
+func setPlace(p *Place, k, v string, num float64) {
+	switch k {
+	case "PLACE":
+		p.Name = v
+	case "LAT":
+		p.Lat = num
+	case "LON":
+		p.Lon = num
+	case "TZ1", "TZ":
+		p.TZ = v
 	}
-	return 0
 }
 
 type App struct {
-	cfg              Config
-	loc              *time.Location
-	cal              Calendar
-	wGlance, wDetail *Weather
-	wErr             error
-	updated          time.Time
+	cfg     Config
+	loc     *time.Location
+	cal     Calendar
+	wDetail *Weather
+	wErr    error
+	updated time.Time
 
-	view  string    // "dash" | "month"
+	place  Place     // where the weather is for: the conf's, or the last IP lookup
+	region string    // SMHI county for warnings
+	locAt  time.Time // last IP lookup
+	maybe  *Place    // a far-away answer waiting for a second one to confirm it
+
 	month time.Time // first day of the shown month
-	sel   time.Time // selected day in the month view
-	page  int       // day panel page
+	sel   time.Time // selected day: the list starts here
+	page  int       // list page
 	hits  []hit
 
 	nextWake    time.Time
@@ -180,6 +206,17 @@ type App struct {
 	shownOnline bool      // Wi-Fi state in the last drawn frame
 	busy        bool      // refresh button pressed, fetch in progress
 	weatherAt   time.Time // last successful weather fetch
+}
+
+// home: today selected, its month shown, the list on its first page.
+func (a *App) home() {
+	t := midnight(clock().In(a.loc), a.loc)
+	a.month, a.sel, a.page = firstOfMonth(t), t, 0
+}
+
+func (a *App) atHome() bool {
+	t := midnight(clock().In(a.loc), a.loc)
+	return a.sel.Equal(t) && a.month.Equal(firstOfMonth(t)) && a.page == 0
 }
 
 // toggleWifi: the Wi-Fi icon. Off -> on and pinned; on (pinned or auto) -> off, back to auto.
@@ -205,16 +242,15 @@ func (a *App) refresh() {
 		a.updated = time.Now().Round(0) // wall clock only: monotonic time stops while suspended
 		return
 	}
-	g, err1 := fetchWeather(a.cfg.Places[0])
-	d, err2 := fetchSMHI(a.cfg.Places[1], 8)
-	if err1 == nil && err2 == nil {
-		a.wGlance, a.wDetail, a.wErr = g, d, nil
+	a.relocate()
+	if d, err := fetchSMHI(a.place, 8); err == nil {
+		a.wDetail, a.wErr = d, nil
 		a.weatherAt = time.Now().Round(0)
 	} else {
-		a.wErr = firstErr(err1, err2)
+		a.wErr = err
 		log.Printf("weather: %v", a.wErr)
 	}
-	if ws, err := fetchWarnings(a.cfg.WarnRegion); err == nil {
+	if ws, err := fetchWarnings(a.region); err == nil {
 		a.warnings = ws
 	} else {
 		log.Printf("warnings: %v", err) // keep the last known list
@@ -229,6 +265,80 @@ func (a *App) refresh() {
 		a.forceCal = false
 	}
 	a.updated = time.Now().Round(0)
+}
+
+// relocate: unless the conf names a place, look the city up from the IP once a day.
+// The result is kept on the card so a reboot doesn't ask again; on failure the last one stays.
+func (a *App) relocate() {
+	every := 24 * time.Hour
+	if a.maybe != nil {
+		every = time.Hour // confirm a move soon
+	}
+	if a.cfg.PlaceSet || !a.cfg.Locate || time.Since(a.locAt) < every {
+		return
+	}
+	p, region, err := locate()
+	a.locAt = time.Now().Round(0) // also after a failure: try again later, not every wake
+	if err != nil {
+		log.Printf("location: %v", err)
+		return
+	}
+	if km(p, a.place) > 50 { // a move (or both databases wrong at once): believe it the second time
+		if a.maybe == nil || km(p, *a.maybe) > 50 {
+			a.maybe = &p
+			log.Printf("location: %s? asking again in an hour", p.Name)
+			return
+		}
+	}
+	a.maybe = nil
+	a.setPlace(p, region)
+	log.Printf("location: %s (%.2f, %.2f), %s", a.place.Name, p.Lat, p.Lon, a.region)
+	if f := stateFile("location"); f != "" {
+		os.WriteFile(f, []byte(fmt.Sprintf("%f\t%f\t%s\t%s\t%s\t%d\n", p.Lat, p.Lon, p.Name, region, p.TZ, a.locAt.Unix())), 0o644)
+	}
+}
+
+// setPlace takes a looked-up place; near the conf's own one it keeps that name ("Göteborg", not "Gothenburg").
+func (a *App) setPlace(p Place, region string) {
+	if km(p, a.cfg.Place) < 30 {
+		p.Name = a.cfg.Place.Name
+	}
+	if p.TZ == "" {
+		p.TZ = a.cfg.TZ
+	}
+	a.place = p
+	if !a.cfg.WarnSet && region != "" {
+		a.region = region
+	}
+}
+
+// loadLocation: the last lookup from the card, if any.
+func (a *App) loadLocation() {
+	b, err := os.ReadFile(stateFile("location"))
+	if err != nil || a.cfg.PlaceSet || !a.cfg.Locate {
+		return
+	}
+	f := strings.Split(strings.TrimSpace(string(b)), "\t")
+	if len(f) != 6 {
+		return
+	}
+	lat, _ := strconv.ParseFloat(f[0], 64)
+	lon, _ := strconv.ParseFloat(f[1], 64)
+	at, _ := strconv.ParseInt(f[5], 10, 64)
+	a.setPlace(Place{f[2], lat, lon, f[4]}, f[3])
+	a.locAt = time.Unix(at, 0)
+}
+
+// stateFile: a small file that survives reboots (on the card on the device, the user cache dir on a desk).
+func stateFile(name string) string {
+	if onDevice() {
+		return "/tmp/p3/rootfs/write/opt/kobodash/" + name
+	}
+	if d, err := os.UserCacheDir(); err == nil {
+		os.MkdirAll(d+"/kobodash", 0o755)
+		return d + "/kobodash/" + name
+	}
+	return ""
 }
 
 // reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background (they refuse
@@ -382,7 +492,7 @@ func (c Config) toScreen(x, y int) image.Point {
 func main() {
 	confPath := flag.String("conf", "/opt/kobodash/dash.conf", "config file")
 	once := flag.String("once", "", "render one frame to this PNG and exit")
-	view := flag.String("view", "dash", "with -once: dash | month")
+	sel := flag.String("sel", "", "with -once: select this day (2006-01-02) instead of today")
 	calib := flag.Bool("calib", false, "print raw touch coordinates")
 	flag.String("server", "", "ignored; run.sh from the image still passes it")
 	stest := flag.Int("suspendtest", 0, "arm the RTC alarm N seconds ahead, suspend, report how long it slept")
@@ -419,7 +529,9 @@ func main() {
 	if err != nil {
 		loc = time.UTC
 	}
-	a := &App{cfg: cfg, loc: loc, cal: Calendar{Feeds: cfg.Feeds, Holiday: cfg.Holiday}, view: "dash"}
+	a := &App{cfg: cfg, loc: loc, cal: Calendar{Feeds: cfg.Feeds, Holiday: cfg.Holiday}, place: cfg.Place, region: cfg.WarnRegion}
+	a.loadLocation()
+	a.home()
 
 	if *once != "" {
 		if t, err := time.ParseInLocation("2006-01-02T15:04", *fakeNow, loc); err == nil {
@@ -430,10 +542,9 @@ func main() {
 			a.warnings = []Warning{{"ORANGE", reasonTR("Rain")}, {"YELLOW", reasonTR("Wind")}}
 			fakeBattery = "pil %85"
 		}
-		now := clock().In(loc)
-		switch *view {
-		case "month":
-			a.openDay(midnight(now, loc))
+		a.home()
+		if t, err := time.ParseInLocation("2006-01-02", *sel, loc); err == nil {
+			a.month, a.sel = firstOfMonth(t), t
 		}
 		if err := writePNG(*once, a.render()); err != nil { // landscape, as people see it
 			log.Fatal(err)
@@ -502,8 +613,8 @@ func main() {
 				maybeUpdate()
 			}
 		case <-tick.C:
-			if a.view != "dash" && time.Since(lastTouch) > time.Duration(cfg.IdleBackMin)*time.Minute {
-				a.view = "dash" // nobody is looking: go back to the dashboard
+			if !a.atHome() && time.Since(lastTouch) > time.Duration(cfg.IdleBackMin)*time.Minute {
+				a.home() // nobody is looking: back to today
 				a.show()
 			}
 			due := time.Since(a.updated) >= time.Duration(cfg.RefreshMin)*time.Minute
@@ -511,9 +622,7 @@ func main() {
 			if due || retry {
 				lastTry = time.Now()
 				a.refresh()
-				if a.view == "dash" {
-					a.show()
-				}
+				a.show()
 			}
 			ensureScaling()
 			if !cfg.WifiAlways && !a.wifiPinned && online() && time.Since(lastTouch) > wifiIdle && !sshActive() {
@@ -549,7 +658,8 @@ func main() {
 // sleepUntil suspends until due (RTC alarm) or the power button. Returns "timer",
 // "button", or "error" when it could not sleep safely.
 func (a *App) sleepUntil(due time.Time) string {
-	a.view, a.nextWake = "dash", due
+	a.nextWake = due
+	a.home()
 	wifiDown()
 	a.show() // this frame stays on the panel while asleep
 	due = due.Round(0)

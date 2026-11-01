@@ -10,17 +10,14 @@ ICS_URL=https://calendar.google.com/calendar/ical/.../basic.ics
 # Display timezone (clock, event times).
 TZ=Europe/Stockholm
 
-# Weather. Place 1: current temperature only. Place 2: also the hourly strip and warnings.
-PLACE=İstanbul
-LAT=41.0082
-LON=28.9784
-TZ1=Europe/Istanbul
-PLACE2=Göteborg
-LAT2=57.7089
-LON2=11.9746
-TZ2=Europe/Stockholm
-# SMHI county for official yellow/orange/red warnings (Sweden only).
-WARN_REGION=Västra Götaland
+# Weather (SMHI, Nordics only). Leave these out and the city is looked up from the public IP
+# once a day (two services must agree; LOCATE=0 turns that off and uses Göteborg).
+#PLACE=Göteborg
+#LAT=57.7089
+#LON=11.9746
+#LOCATE=0
+# SMHI county for official yellow/orange/red warnings (Sweden only); default: the located county.
+#WARN_REGION=Västra Götaland
 
 # Refresh: weather (and wake-up) every N minutes, calendars every M minutes.
 REFRESH_MIN=60

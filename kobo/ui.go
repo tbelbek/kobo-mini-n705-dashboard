@@ -188,7 +188,7 @@ func icon(dst *image.Gray, name string, x, y, size int) {
 var fakeBattery = "" // set by -fakewarn for desk renders
 
 func battery() string {
-	b, err := os.ReadFile("/sys/class/power_supply/mc13892_bat/capacity")
+	b, err := os.ReadFile(battDir + "capacity")
 	if err != nil {
 		return fakeBattery
 	}

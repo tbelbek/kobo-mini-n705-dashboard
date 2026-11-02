@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -240,6 +241,12 @@ type App struct {
 	shownOnline bool      // Wi-Fi state in the last drawn frame
 	busy        bool      // refresh button pressed, fetch in progress
 	weatherAt   time.Time // last successful weather fetch
+
+	// fuel-gauge readings around each suspend, for the per-wake cost in the wake report
+	wakeCharge, sleepCharge int // µAh at the last resume / the last suspend
+	resumeAt, sleepAt       time.Time
+	wakeOK, sleepOK         bool
+	lastWake, lastSleep     string // "1.2 mAh/18s": what the previous wake and sleep cost
 }
 
 // home: today selected, its month shown, the list on its first page.
@@ -291,6 +298,7 @@ func (a *App) refresh() {
 	run := func(f func()) { wg.Add(1); go func() { defer wg.Done(); f() }() }
 	run(a.batteryAlert)
 	run(func() { a.wakeReport(wifi) })
+	run(a.batteryProbe)
 	run(func() { w, wErr = fetchSMHI(a.place, 8) })
 	run(func() { ws, warnErr = fetchWarnings(a.region) })
 	if cal { // calendars change rarely: every CAL_REFRESH_MIN, or now when the refresh button asked
@@ -842,6 +850,12 @@ func (a *App) sleepUntil(due time.Time) string {
 	}
 	log.Printf("sleep: alarm in %v (next update %s) %s", d.Round(time.Second), due.In(a.loc).Format("15:04:05"), battery())
 	start := time.Now().Round(0) // wall clock; monotonic time stops in suspend
+	if c, ok := chargeNow(); ok {
+		if a.wakeOK {
+			a.lastWake = costNote(a.wakeCharge-c, start.Sub(a.resumeAt))
+		}
+		a.sleepCharge, a.sleepAt, a.sleepOK = c, start, true
+	}
 	if err := suspend(); err != nil {
 		log.Printf("suspend: %v", err)
 		return "error"
@@ -849,6 +863,13 @@ func (a *App) sleepUntil(due time.Time) string {
 	woke := "button"
 	if time.Now().Round(0).After(due.Add(-45 * time.Second)) {
 		woke = "timer"
+	}
+	if c, ok := chargeNow(); ok {
+		now := time.Now().Round(0)
+		if a.sleepOK {
+			a.lastSleep = costNote(a.sleepCharge-c, now.Sub(a.sleepAt))
+		}
+		a.wakeCharge, a.resumeAt, a.wakeOK = c, now, true
 	}
 	log.Printf("woke: %s after %v %s", woke, time.Now().Round(0).Sub(start).Round(time.Second), battery())
 	return woke
@@ -905,7 +926,7 @@ func (a *App) batteryAlert() {
 	if a.cfg.TgToken == "" || a.cfg.TgChat == "" {
 		return
 	}
-	b, err := os.ReadFile("/sys/class/power_supply/mc13892_bat/capacity")
+	b, err := os.ReadFile(battDir + "capacity")
 	if err != nil {
 		return
 	}
@@ -958,6 +979,63 @@ func (a *App) wakeReport(wifi time.Duration) {
 	if a.cfg.TgLogThread == "" {
 		return
 	}
-	a.telegram(a.cfg.TgLogThread, fmt.Sprintf("Kobo pano %s · uyanış: %s · %s · Wi-Fi %v",
-		version, a.wokeBy, battery(), wifi.Round(100*time.Millisecond)), true)
+	msg := fmt.Sprintf("Kobo pano %s · uyanış: %s · %s · Wi-Fi %v",
+		version, a.wokeBy, battery(), wifi.Round(100*time.Millisecond))
+	if b, err := os.ReadFile(battDir + "current_now"); err == nil {
+		if ua, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+			msg += fmt.Sprintf(" · akım %d mA", ua/1000)
+		}
+	}
+	if a.lastWake != "" {
+		msg += " · önceki uyanış " + a.lastWake
+	}
+	if a.lastSleep != "" {
+		msg += " · uyku " + a.lastSleep
+	}
+	a.telegram(a.cfg.TgLogThread, msg, true)
+}
+
+const battDir = "/sys/class/power_supply/mc13892_bat/"
+
+// chargeNow: the fuel gauge's charge counter in µAh, if the driver exposes one.
+func chargeNow() (int, bool) {
+	for _, n := range []string{"charge_now", "charge_counter"} {
+		if b, err := os.ReadFile(battDir + n); err == nil {
+			if v, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				return v, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func costNote(uAh int, d time.Duration) string {
+	return fmt.Sprintf("%.1f mAh/%v", float64(uAh)/1000, d.Round(time.Second))
+}
+
+// batteryProbe posts every readable power_supply attribute once per version,
+// so what the gauge offers can be read off Telegram without ssh.
+func (a *App) batteryProbe() {
+	f := stateFile("battprobe")
+	if b, _ := os.ReadFile(f); a.cfg.TgLogThread == "" || string(b) == version {
+		return
+	}
+	var out []string
+	dirs, _ := filepath.Glob("/sys/class/power_supply/*")
+	for _, d := range dirs {
+		es, _ := os.ReadDir(d)
+		var kv []string
+		for _, e := range es {
+			if !e.Type().IsRegular() || e.Name() == "uevent" {
+				continue
+			}
+			if b, err := os.ReadFile(d + "/" + e.Name()); err == nil && len(b) < 64 {
+				kv = append(kv, e.Name()+"="+strings.TrimSpace(string(b)))
+			}
+		}
+		out = append(out, filepath.Base(d)+": "+strings.Join(kv, " "))
+	}
+	if len(out) > 0 && a.telegram(a.cfg.TgLogThread, "Kobo pano pil bilgisi · "+strings.Join(out, " | "), true) {
+		os.WriteFile(f, []byte(version), 0o644)
+	}
 }

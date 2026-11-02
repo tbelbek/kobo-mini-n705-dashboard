@@ -127,3 +127,11 @@ func TestAlertStep(t *testing.T) {
 		}
 	}
 }
+
+func TestPBKDF2(t *testing.T) {
+	// IEEE 802.11i test vector: passphrase "password", SSID "IEEE"
+	got := fmt.Sprintf("%x", pbkdf2SHA1([]byte("password"), []byte("IEEE"), 4096, 32))
+	if want := "f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e"; got != want {
+		t.Errorf("pbkdf2 = %s, want %s", got, want)
+	}
+}

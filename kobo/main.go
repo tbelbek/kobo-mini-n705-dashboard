@@ -9,7 +9,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha1"
 	"encoding/binary"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"image"
@@ -21,6 +25,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -204,6 +209,7 @@ func setPlace(p *Place, k, v string, num float64) {
 
 type App struct {
 	cfg     Config
+	shown   []byte // pixels on the panel now: an identical frame isn't redrawn
 	loc     *time.Location
 	cal     Calendar
 	wDetail *Weather
@@ -261,10 +267,14 @@ func onDevice() bool {
 }
 
 func (a *App) refresh() {
+	t0 := time.Now()
 	if onDevice() && !wifiUp(90*time.Second) {
 		a.wErr = fmt.Errorf("Wi-Fi bağlanamadı")
 		a.updated = time.Now().Round(0) // wall clock only: monotonic time stops while suspended
 		return
+	}
+	if onDevice() {
+		log.Printf("wifi: up in %v", time.Since(t0).Round(100*time.Millisecond))
 	}
 	a.relocate()
 	a.batteryAlert()
@@ -369,11 +379,86 @@ func stateFile(name string) string {
 // reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background (they refuse
 // to run twice, so overlapping calls are harmless).
 func reconnectWifi() {
-	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf && /usr/local/bin/wifi/toggle.sh on && `+
-		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"`)
+	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf && /usr/local/bin/wifi/toggle.sh on && `+fastConnect())
 	if cmd.Start() == nil {
 		go cmd.Wait()
 	}
+}
+
+const slowConnect = `/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"`
+
+// fastConnect skips what InkBox's connect script spends its time on: the PSK is hashed
+// once per boot instead of on every association, and DHCP retries every second instead
+// of every three. Anything that goes wrong falls back to the InkBox script.
+func fastConnect() string {
+	if wpaConf() != nil {
+		return slowConnect
+	}
+	return `killall wpa_supplicant udhcpc 2>/dev/null; ` +
+		`wpa_supplicant -D wext -i eth0 -c /run/kd-wpa.conf -O /run/wpa_supplicant -B && ` +
+		`udhcpc -i eth0 -q -n -t 12 -T 1 -A 1 && ip -4 addr show eth0 | grep -q inet || ` +
+		`{ killall wpa_supplicant udhcpc 2>/dev/null; ` + slowConnect + `; }`
+}
+
+var wpaOnce struct {
+	sync.Once
+	err error
+}
+
+// wpaConf writes the supplicant config with a precomputed PSK (4096 SHA-1 rounds on
+// this CPU are worth skipping on every wake).
+func wpaConf() error {
+	wpaOnce.Do(func() {
+		b, err := os.ReadFile("/opt/kobodash/kobodash.conf")
+		if err != nil {
+			wpaOnce.err = err
+			return
+		}
+		var ssid, psk string
+		for _, l := range strings.Split(string(b), "\n") {
+			k, v, _ := strings.Cut(strings.TrimSpace(l), "=")
+			v = strings.Trim(v, `"'`)
+			switch k {
+			case "WIFI_SSID":
+				ssid = v
+			case "WIFI_PSK":
+				psk = v
+			}
+		}
+		if ssid == "" || len(psk) < 8 || strings.ContainsAny(ssid, "\"\n") {
+			wpaOnce.err = fmt.Errorf("wifi: no usable SSID/PSK")
+			return
+		}
+		key := fmt.Sprintf("%x", pbkdf2SHA1([]byte(psk), []byte(ssid), 4096, 32))
+		if _, err := hex.DecodeString(psk); err == nil && len(psk) == 64 {
+			key = psk // already the raw 256-bit key
+		}
+		conf := fmt.Sprintf("ctrl_interface=/run/wpa_supplicant\nnetwork={\n\tssid=\"%s\"\n\tpsk=%s\n}\n", ssid, key)
+		wpaOnce.err = os.WriteFile("/run/kd-wpa.conf", []byte(conf), 0o600)
+	})
+	return wpaOnce.err
+}
+
+// pbkdf2SHA1 is RFC 8018 PBKDF2 with HMAC-SHA1 (crypto/pbkdf2 arrives in Go 1.24).
+func pbkdf2SHA1(pass, salt []byte, iter, n int) []byte {
+	var out []byte
+	for blk := uint32(1); len(out) < n; blk++ {
+		h := hmac.New(sha1.New, pass)
+		h.Write(salt)
+		h.Write([]byte{byte(blk >> 24), byte(blk >> 16), byte(blk >> 8), byte(blk)})
+		u := h.Sum(nil)
+		t := append([]byte(nil), u...)
+		for i := 1; i < iter; i++ {
+			h = hmac.New(sha1.New, pass)
+			h.Write(u)
+			u = h.Sum(nil)
+			for j := range t {
+				t[j] ^= u[j]
+			}
+		}
+		out = append(out, t...)
+	}
+	return out[:n]
 }
 
 // wifiUp brings the radio up and waits for an address.
@@ -382,7 +467,7 @@ func wifiUp(timeout time.Duration) bool {
 		return true
 	}
 	reconnectWifi()
-	for end := time.Now().Add(timeout); time.Now().Before(end); time.Sleep(2 * time.Second) {
+	for end := time.Now().Add(timeout); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
 		if online() {
 			return true
 		}
@@ -443,14 +528,20 @@ func firstErr(errs ...error) error {
 const framePath = "/tmp/kobodash.png"
 
 func (a *App) show() {
-	if err := writePNG(framePath, panelFrame(a.render(), a.cfg.Rotate)); err != nil {
+	frame := panelFrame(a.render(), a.cfg.Rotate)
+	if bytes.Equal(frame.Pix, a.shown) {
+		return // a full e-ink flash costs about a second of panel power for nothing
+	}
+	if err := writePNG(framePath, frame); err != nil {
 		log.Printf("frame: %v", err)
 		return
 	}
 	// -f: full flashing refresh, clears ghosting on every page change
 	if out, err := exec.Command(a.cfg.Fbink, "-q", "-f", "-g", "file="+framePath).CombinedOutput(); err != nil {
 		log.Printf("fbink: %v %s", err, out)
+		return
 	}
+	a.shown = frame.Pix
 }
 
 func writePNG(path string, img image.Image) error {

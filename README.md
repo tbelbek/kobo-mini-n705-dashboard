@@ -139,7 +139,7 @@ The picture is drawn in landscape and turned a quarter turn onto the portrait pa
 
 ## Updates
 
-A device running a release build updates itself. Every `UPDATE_HOURS` (6), right after a timed refresh while Wi-Fi is up, it asks GitHub for the latest release of `UPDATE_REPO`. If the tag differs from its own version, it downloads `kobodash-armv7` and `kobodash-armv7.sig` and checks the ed25519 signature against the public key compiled into it (`kobo/update.go`, or `UPDATE_PUBKEY`). Only a binary that verifies gets installed. The private key lives on the maintainer's machine and never in the repo, so a compromised GitHub account can't push code to devices.
+A device running a release build updates itself. After every timed refresh (or every `UPDATE_HOURS` hours, if set) while Wi-Fi is up, it asks GitHub for the latest release of `UPDATE_REPO`. If the tag differs from its own version, it downloads `kobodash-armv7` and `kobodash-armv7.sig` and checks the ed25519 signature against the public key compiled into it (`kobo/update.go`, or `UPDATE_PUBKEY`). Only a binary that verifies gets installed. The private key lives on the maintainer's machine and never in the repo, so a compromised GitHub account can't push code to devices.
 
 `supervise.sh` runs the app. The app exits after installing an update and the supervisor starts the new binary. If that binary exits with an error within a minute, the supervisor puts the previous one (`kobodash.prev`) back.
 

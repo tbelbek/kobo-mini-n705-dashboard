@@ -89,7 +89,7 @@ func loadConfig(path string) Config {
 		WarnRegion:    "Västra Götaland",
 		UpdateRepo:    "tbelbek/kobo-mini-n705-dashboard",
 		UpdatePubKey:  releasePubKey,
-		UpdateHours:   6,
+		UpdateHours:   0, // 0 = every timed refresh: one GitHub API call while Wi-Fi is already up
 		UpdateAPI:     "https://api.github.com",
 	}
 	f, err := os.Open(path)

@@ -249,6 +249,25 @@ func (a *App) button(img *image.Gray, r image.Rectangle, label string, active bo
 	a.tap(r, fn)
 }
 
+// status is the small footer line: version · battery · stale-data notice · next update.
+func (a *App) status() string {
+	parts := []string{version}
+	if b := battery(); b != "" {
+		parts = append(parts, b)
+	}
+	if a.wErr != nil { // the last refresh failed
+		parts = append(parts, "eski veri")
+	}
+	next := a.nextWake // set when going to sleep; while awake, derive it from the last refresh
+	if next.Before(a.updated) {
+		next = a.updated.Add(time.Duration(a.cfg.RefreshMin) * time.Minute)
+	}
+	if a.cfg.Sleep && next.After(clock()) {
+		parts = append(parts, "sonraki "+next.In(a.loc).Format("15:04"))
+	}
+	return strings.Join(parts, " · ")
+}
+
 // nav is the header every view shares: tabs · date + ISO week · next update/battery, Wi-Fi, refresh.
 func (a *App) nav(img *image.Gray) {
 	now := clock().In(a.loc)
@@ -281,35 +300,10 @@ func (a *App) nav(img *image.Gray) {
 	icon(img, wifi, wr.Min.X+10, 11, 28)
 	a.tap(image.Rect(wr.Min.X-8, 0, W-72, 58), a.toggleWifi)
 
-	// next update and battery: small, stacked, left of the Wi-Fi icon
-	var parts []string
-	next := a.nextWake // set when going to sleep; while awake, derive it from the last refresh
-	if next.Before(a.updated) {
-		next = a.updated.Add(time.Duration(a.cfg.RefreshMin) * time.Minute)
-	}
-	first := ""
-	if a.cfg.Sleep && next.After(clock()) {
-		first = next.In(a.loc).Format("15:04")
-	}
-	if a.wErr != nil { // the last refresh failed: say so where it's seen, not just "veri 12:01"
-		first = strings.TrimSuffix("eski veri · "+first, " · ")
-	}
-	if first != "" {
-		parts = append(parts, first)
-	}
-	if b := battery(); b != "" {
-		parts = append(parts, b)
-	}
-	fs, stW := face(false, tTiny), 0
-	for i, p := range parts[:min(len(parts), 2)] {
-		text(img, wr.Min.X-8-textW(fs, p), 21+i*19, p, fs, black)
-		stW = max(stW, textW(fs, p))
-	}
-
 	// date without the year ("1 Kasım, Paz · W44"); warnings ride right of the week and get
 	// the room of the long month name when there are any
 	_, week := now.ISOWeek()
-	room := wr.Min.X - 8 - stW - 16 - dx
+	room := wr.Min.X - 16 - dx
 	date := fmt.Sprintf("%d %s, %s", now.Day(), trMonths[now.Month()], trDays[now.Weekday()])
 	if len(a.warnings) > 0 {
 		date = fmt.Sprintf("%d %s, %s", now.Day(), short(trMonths[now.Month()]), trDays[now.Weekday()])

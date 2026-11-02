@@ -30,13 +30,12 @@ func (a *App) drawMain(img *image.Gray) {
 	fill(img, image.Rect(rx, 492, W-mx, 494), black)
 	a.drawHours(img, rx, 494, 4)
 	fill(img, image.Rect(mx, 550, W-mx, 552), black)
+	tiny, st := face(false, tTiny), a.status() // bottom-left; the attribution gives way to it
+	text(img, mx, 594, st, tiny, black)
 	if q, ok := quoteFor(clock().In(a.loc)); ok {
-		tiny := face(false, tTiny)
 		text(img, mx, 574, ellipsis(quoteFace(), "“"+q.Text+"”", W-2*mx), quoteFace(), black)
-		vw := textW(tiny, version) + 16 // the version sits bottom-left, the attribution gives way to it
-		attr := ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx-vw)
+		attr := ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx-textW(tiny, st)-16)
 		text(img, W-mx-textW(tiny, attr), 594, attr, tiny, black)
-		text(img, mx, 594, version, tiny, black)
 	}
 }
 

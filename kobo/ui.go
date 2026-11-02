@@ -135,6 +135,10 @@ var icons = map[string]string{
 		`<polygon points="21,2.5 21,10 13.5,10"/>`,
 }
 
+func init() { // the last refresh failed: the refresh arrow struck through like wifi-off
+	icons["refresh-off"] = icons["refresh"] + strings.TrimPrefix(icons["wifi-off"], wifiArcs)
+}
+
 const wifiArcs = `<g fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round"><path d="M2 9a15 15 0 0 1 20 0"/>` +
 	`<path d="M5.5 12.5a10 10 0 0 1 13 0"/><path d="M9 16a5 5 0 0 1 6 0"/></g><circle cx="12" cy="19.5" r="1.8"/>`
 
@@ -249,14 +253,11 @@ func (a *App) button(img *image.Gray, r image.Rectangle, label string, active bo
 	a.tap(r, fn)
 }
 
-// status is the small footer line: version · battery · stale-data notice · next update.
+// status is the small footer line: version · battery · next update.
 func (a *App) status() string {
 	parts := []string{version}
 	if b := battery(); b != "" {
 		parts = append(parts, b)
-	}
-	if a.wErr != nil { // the last refresh failed
-		parts = append(parts, "eski veri")
 	}
 	next := a.nextWake // set when going to sleep; while awake, derive it from the last refresh
 	if next.Before(a.updated) {

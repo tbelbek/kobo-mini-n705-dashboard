@@ -127,4 +127,3 @@ func TestAlertStep(t *testing.T) {
 		}
 	}
 }
-

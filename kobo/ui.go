@@ -287,11 +287,20 @@ func (a *App) nav(img *image.Gray) {
 	if next.Before(a.updated) {
 		next = a.updated.Add(time.Duration(a.cfg.RefreshMin) * time.Minute)
 	}
+	first := ""
 	if a.cfg.Sleep && next.After(clock()) {
-		parts = append(parts, next.In(a.loc).Format("15:04"))
+		first = next.In(a.loc).Format("15:04")
+	}
+	if a.wErr != nil { // the last refresh failed: say so where it's seen, not just "veri 12:01"
+		first = strings.TrimSuffix("güncellenemedi · "+first, " · ")
+	}
+	if first != "" {
+		parts = append(parts, first)
 	}
 	if b := battery(); b != "" {
-		parts = append(parts, b)
+		parts = append(parts, b+" · "+version)
+	} else {
+		parts = append(parts, version)
 	}
 	fs, stW := face(false, tTiny), 0
 	for i, p := range parts[:min(len(parts), 2)] {

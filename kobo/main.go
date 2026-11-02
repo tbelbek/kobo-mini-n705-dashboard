@@ -10,10 +10,7 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha1"
 	"encoding/binary"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"image"
@@ -405,86 +402,11 @@ func stateFile(name string) string {
 // reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background (they refuse
 // to run twice, so overlapping calls are harmless).
 func reconnectWifi() {
-	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf && /usr/local/bin/wifi/toggle.sh on && `+fastConnect())
+	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf && /usr/local/bin/wifi/toggle.sh on && `+
+		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"`)
 	if cmd.Start() == nil {
 		go cmd.Wait()
 	}
-}
-
-const slowConnect = `/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"`
-
-// fastConnect skips what InkBox's connect script spends its time on: the PSK is hashed
-// once per boot instead of on every association, and DHCP retries every second instead
-// of every three. Anything that goes wrong falls back to the InkBox script.
-func fastConnect() string {
-	if wpaConf() != nil {
-		return slowConnect
-	}
-	return `killall wpa_supplicant udhcpc 2>/dev/null; rm -f /run/wpa_supplicant/eth0; ` + // stale ctrl socket makes -B fail
-		`wpa_supplicant -D wext -i eth0 -c /run/kd-wpa.conf -O /run/wpa_supplicant -B && ` +
-		`udhcpc -i eth0 -q -n -t 12 -T 1 -A 1 && ip -4 addr show eth0 | grep -q inet || ` +
-		`{ killall wpa_supplicant udhcpc 2>/dev/null; ` + slowConnect + `; }`
-}
-
-var wpaOnce struct {
-	sync.Once
-	err error
-}
-
-// wpaConf writes the supplicant config with a precomputed PSK (4096 SHA-1 rounds on
-// this CPU are worth skipping on every wake).
-func wpaConf() error {
-	wpaOnce.Do(func() {
-		b, err := os.ReadFile("/opt/kobodash/kobodash.conf")
-		if err != nil {
-			wpaOnce.err = err
-			return
-		}
-		var ssid, psk string
-		for _, l := range strings.Split(string(b), "\n") {
-			k, v, _ := strings.Cut(strings.TrimSpace(l), "=")
-			v = strings.Trim(v, `"'`)
-			switch k {
-			case "WIFI_SSID":
-				ssid = v
-			case "WIFI_PSK":
-				psk = v
-			}
-		}
-		if ssid == "" || len(psk) < 8 || strings.ContainsAny(ssid, "\"\n") {
-			wpaOnce.err = fmt.Errorf("wifi: no usable SSID/PSK")
-			return
-		}
-		key := fmt.Sprintf("%x", pbkdf2SHA1([]byte(psk), []byte(ssid), 4096, 32))
-		if _, err := hex.DecodeString(psk); err == nil && len(psk) == 64 {
-			key = psk // already the raw 256-bit key
-		}
-		conf := fmt.Sprintf("ctrl_interface=/run/wpa_supplicant\nnetwork={\n\tssid=\"%s\"\n\tpsk=%s\n}\n", ssid, key)
-		wpaOnce.err = os.WriteFile("/run/kd-wpa.conf", []byte(conf), 0o600)
-	})
-	return wpaOnce.err
-}
-
-// pbkdf2SHA1 is RFC 8018 PBKDF2 with HMAC-SHA1 (crypto/pbkdf2 arrives in Go 1.24).
-func pbkdf2SHA1(pass, salt []byte, iter, n int) []byte {
-	var out []byte
-	for blk := uint32(1); len(out) < n; blk++ {
-		h := hmac.New(sha1.New, pass)
-		h.Write(salt)
-		h.Write([]byte{byte(blk >> 24), byte(blk >> 16), byte(blk >> 8), byte(blk)})
-		u := h.Sum(nil)
-		t := append([]byte(nil), u...)
-		for i := 1; i < iter; i++ {
-			h = hmac.New(sha1.New, pass)
-			h.Write(u)
-			u = h.Sum(nil)
-			for j := range t {
-				t[j] ^= u[j]
-			}
-		}
-		out = append(out, t...)
-	}
-	return out[:n]
 }
 
 // wifiUp brings the radio up and waits for an address.

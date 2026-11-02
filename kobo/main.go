@@ -396,7 +396,7 @@ func stateFile(name string) string {
 
 // reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background, like run.sh does at boot:
 // connect even when toggle.sh on reports a failure (its status is wlarm_le up's). They refuse
-// to run twice, so overlapping calls are harmless).
+// to run twice, so overlapping calls are harmless.
 func reconnectWifi() {
 	t0 := time.Now()
 	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf; /usr/local/bin/wifi/toggle.sh on; echo "toggle on: $?"; `+
@@ -427,14 +427,31 @@ func reconnectWifi() {
 	}()
 }
 
-// wifiUp brings the radio up and waits for an address.
+// wifiUp brings the radio up and waits until it can reach the internet: udhcpc sets
+// the address a moment before the default route, and fetches started in between all
+// fail with "network is unreachable".
 func wifiUp(timeout time.Duration) bool {
-	if online() {
+	if routed() {
 		return true
 	}
 	reconnectWifi()
 	for end := time.Now().Add(timeout); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
-		if online() {
+		if routed() {
+			return true
+		}
+	}
+	return false
+}
+
+// routed: eth0 has an IPv4 address and the default route.
+func routed() bool {
+	b, _ := os.ReadFile("/proc/net/route")
+	return online() && hasDefaultRoute(string(b))
+}
+
+func hasDefaultRoute(table string) bool {
+	for _, l := range strings.Split(table, "\n")[1:] {
+		if f := strings.Fields(l); len(f) > 2 && f[0] == "eth0" && f[1] == "00000000" {
 			return true
 		}
 	}

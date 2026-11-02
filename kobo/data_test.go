@@ -127,3 +127,15 @@ func TestAlertStep(t *testing.T) {
 		}
 	}
 }
+
+func TestHasDefaultRoute(t *testing.T) {
+	hdr := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\n"
+	link := "eth0\t0001A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n"
+	def := "eth0\t00000000\t0101A8C0\t0003\t0\t0\t218\t00000000\n"
+	if hasDefaultRoute(hdr + link) {
+		t.Error("link route alone counted as default")
+	}
+	if !hasDefaultRoute(hdr + link + def) {
+		t.Error("default route not found")
+	}
+}

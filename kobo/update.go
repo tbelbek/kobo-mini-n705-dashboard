@@ -80,6 +80,7 @@ func (a *App) checkUpdate() bool {
 		return false
 	}
 	log.Printf("update: %s -> %s installed, restarting", version, rel.Tag)
+	os.WriteFile(stateFile("updated"), []byte(version+" → "+rel.Tag), 0o644) // the new binary reports and sleeps
 	return true
 }
 

@@ -704,6 +704,11 @@ func main() {
 	go readPowerKey(cfg.KeyInput, keys)
 
 	ensureScaling()
+	updated, _ := os.ReadFile(stateFile("updated")) // set by the binary that installed us
+	os.Remove(stateFile("updated"))
+	if len(updated) > 0 {
+		a.wokeBy = "güncelleme"
+	}
 	a.refresh()
 	a.show()
 	tick := time.NewTicker(10 * time.Second)
@@ -719,6 +724,17 @@ func main() {
 		}
 	}
 	maybeUpdate()
+	if len(updated) > 0 {
+		if a.wErr == nil { // came up fine: say so and go straight back to sleep, nobody is looking
+			if cfg.TgLogThread != "" {
+				a.telegram(cfg.TgLogThread, "Kobo pano güncellendi: "+string(updated)+" · çalışıyor, uyuyor", true)
+			}
+			lastTouch = time.Time{}
+			keys <- struct{}{} // wakes the select below, whose power-key branch puts it to sleep
+		} else if cfg.TgLogThread != "" {
+			a.telegram(cfg.TgLogThread, "Kobo pano güncellendi: "+string(updated)+" · ama: "+a.wErr.Error(), true)
+		}
+	}
 	wifiIdle := time.Duration(cfg.WifiIdleMin) * time.Minute
 	refreshEvery := time.Duration(cfg.RefreshMin) * time.Minute
 	awakeIdle := time.Duration(cfg.AwakeSec) * time.Second

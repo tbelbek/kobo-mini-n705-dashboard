@@ -33,8 +33,10 @@ func (a *App) drawMain(img *image.Gray) {
 	if q, ok := quoteFor(clock().In(a.loc)); ok {
 		tiny := face(false, tTiny)
 		text(img, mx, 574, ellipsis(quoteFace(), "“"+q.Text+"”", W-2*mx), quoteFace(), black)
-		attr := ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx)
+		vw := textW(tiny, version) + 16 // the version sits bottom-left, the attribution gives way to it
+		attr := ellipsis(tiny, "— "+q.Author+", "+q.Work, W-2*mx-vw)
 		text(img, W-mx-textW(tiny, attr), 594, attr, tiny, black)
+		text(img, mx, 594, version, tiny, black)
 	}
 }
 

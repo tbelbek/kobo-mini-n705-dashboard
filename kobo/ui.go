@@ -292,15 +292,13 @@ func (a *App) nav(img *image.Gray) {
 		first = next.In(a.loc).Format("15:04")
 	}
 	if a.wErr != nil { // the last refresh failed: say so where it's seen, not just "veri 12:01"
-		first = strings.TrimSuffix("güncellenemedi · "+first, " · ")
+		first = strings.TrimSuffix("eski veri · "+first, " · ")
 	}
 	if first != "" {
 		parts = append(parts, first)
 	}
 	if b := battery(); b != "" {
-		parts = append(parts, b+" · "+version)
-	} else {
-		parts = append(parts, version)
+		parts = append(parts, b)
 	}
 	fs, stW := face(false, tTiny), 0
 	for i, p := range parts[:min(len(parts), 2)] {

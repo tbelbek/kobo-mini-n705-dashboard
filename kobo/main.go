@@ -412,7 +412,7 @@ func fastConnect() string {
 	if wpaConf() != nil {
 		return slowConnect
 	}
-	return `killall wpa_supplicant udhcpc 2>/dev/null; ` +
+	return `killall wpa_supplicant udhcpc 2>/dev/null; rm -f /run/wpa_supplicant/eth0; ` + // stale ctrl socket makes -B fail
 		`wpa_supplicant -D wext -i eth0 -c /run/kd-wpa.conf -O /run/wpa_supplicant -B && ` +
 		`udhcpc -i eth0 -q -n -t 12 -T 1 -A 1 && ip -4 addr show eth0 | grep -q inet || ` +
 		`{ killall wpa_supplicant udhcpc 2>/dev/null; ` + slowConnect + `; }`

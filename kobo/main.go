@@ -273,6 +273,7 @@ func (a *App) refresh() {
 	t0 := time.Now()
 	if onDevice() && !wifiUp(90*time.Second) {
 		a.wErr = fmt.Errorf("Wi-Fi bağlanamadı")
+		log.Printf("wifi: no address after 90s %s", battery())
 		a.updated = time.Now().Round(0) // wall clock only: monotonic time stops while suspended
 		return
 	}
@@ -396,11 +397,33 @@ func stateFile(name string) string {
 // reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background (they refuse
 // to run twice, so overlapping calls are harmless).
 func reconnectWifi() {
+	t0 := time.Now()
 	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf && /usr/local/bin/wifi/toggle.sh on && `+
 		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"`)
-	if cmd.Start() == nil {
-		go cmd.Wait()
+	// the scripts' output goes to the card: when a wake gets no address, this is the only trace
+	wl := stateFile("wifi.log")
+	if st, err := os.Stat(wl); err == nil && st.Size() > 256<<10 {
+		os.Rename(wl, wl+".old")
 	}
+	f, _ := os.OpenFile(wl, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if f != nil {
+		fmt.Fprintf(f, "== %s connect\n", time.Now().UTC().Format("2006-01-02 15:04:05"))
+		cmd.Stdout, cmd.Stderr = f, f
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("wifi: start: %v", err)
+		if f != nil {
+			f.Close()
+		}
+		return
+	}
+	go func() {
+		err := cmd.Wait() // exit 255 = connect_to_network.sh thinks another copy is running
+		log.Printf("wifi: connect script done after %v: %v", time.Since(t0).Round(100*time.Millisecond), err)
+		if f != nil {
+			f.Close()
+		}
+	}()
 }
 
 // wifiUp brings the radio up and waits for an address.
@@ -430,6 +453,9 @@ func wifiDown() {
 
 // sshActive: an established connection on local port 22 (0x0016) — never cut it.
 func sshActive() bool {
+	if !online() { // without Wi-Fi a session can't be alive; a dead one can stay ESTABLISHED for hours
+		return false
+	}
 	b, err := os.ReadFile("/proc/net/tcp")
 	if err != nil {
 		return false
@@ -643,6 +669,7 @@ func main() {
 	a.show()
 	tick := time.NewTicker(10 * time.Second)
 	lastTouch, lastTry, resumed := time.Now(), time.Now(), time.Time{}
+	lastBeat := time.Now()
 	var lastUpdateCheck time.Time
 	maybeUpdate := func() { // only right after a refresh, while Wi-Fi is up
 		if time.Now().Round(0).Sub(lastUpdateCheck) < time.Duration(cfg.UpdateHours)*time.Hour {
@@ -706,6 +733,10 @@ func main() {
 				a.show()
 			}
 			ensureScaling()
+			if time.Since(lastBeat) >= 10*time.Minute { // awake this long means something is holding it up
+				lastBeat = time.Now()
+				log.Printf("awake: idle %v, ssh %v, pinned %v, online %v %s", time.Since(lastTouch).Round(time.Second), sshActive(), a.wifiPinned, online(), battery())
+			}
 			if !cfg.WifiAlways && !a.wifiPinned && online() && time.Since(lastTouch) > wifiIdle && !sshActive() {
 				wifiDown()
 			}
@@ -880,6 +911,7 @@ func (a *App) telegram(thread, text string, silent bool) bool {
 		log.Printf("telegram: HTTP %d", resp.StatusCode)
 		return false
 	}
+	log.Printf("telegram: sent (%d chars)", len(text))
 	return true
 }
 

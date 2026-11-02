@@ -394,12 +394,13 @@ func stateFile(name string) string {
 	return ""
 }
 
-// reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background (they refuse
+// reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background, like run.sh does at boot:
+// connect even when toggle.sh on reports a failure (its status is wlarm_le up's). They refuse
 // to run twice, so overlapping calls are harmless).
 func reconnectWifi() {
 	t0 := time.Now()
-	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf && /usr/local/bin/wifi/toggle.sh on && `+
-		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"`)
+	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf; /usr/local/bin/wifi/toggle.sh on; echo "toggle on: $?"; `+
+		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"; echo "connect: $?"`)
 	// the scripts' output goes to the card: when a wake gets no address, this is the only trace
 	wl := stateFile("wifi.log")
 	if st, err := os.Stat(wl); err == nil && st.Size() > 256<<10 {
@@ -790,7 +791,9 @@ func (a *App) wakeAt(due time.Time) time.Time {
 func (a *App) sleepUntil(due time.Time) string {
 	a.nextWake = due
 	a.home()
+	log.Printf("sleep: wifi off")
 	wifiDown()
+	log.Printf("sleep: drawing")
 	a.show() // this frame stays on the panel while asleep
 	due = due.Round(0)
 	d := due.Sub(time.Now().Round(0))

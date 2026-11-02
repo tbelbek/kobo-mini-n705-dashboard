@@ -31,11 +31,7 @@ func (a *App) drawMain(img *image.Gray) {
 	a.drawHours(img, rx, 494, 4)
 	fill(img, image.Rect(mx, 550, W-mx, 552), black)
 	tiny := face(false, tTiny) // status bottom-left; the attribution gives way to it
-	stEnd := text(img, mx, 594, a.status(), tiny, black)
-	if a.wErr != nil { // the last refresh failed: these numbers are old
-		icon(img, "refresh-off", stEnd+8, 578, 20)
-		stEnd += 28
-	}
+	stEnd := a.drawStatus(img, mx, 594)
 	if q, ok := quoteFor(clock().In(a.loc)); ok {
 		text(img, mx, 574, ellipsis(quoteFace(), "“"+q.Text+"”", W-2*mx), quoteFace(), black)
 		attr := ellipsis(tiny, "— "+q.Author+", "+q.Work, W-mx-stEnd-16)

@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -175,8 +176,17 @@ func wcat(code int) string {
 	return "cloud"
 }
 
-func icon(dst *image.Gray, name string, x, y, size int) {
-	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">` + icons[name] + `</svg>`
+func icon(dst *image.Gray, name string, x, y, size int) { drawSVG(dst, icons[name], x, y, size) }
+
+// battIcon: a battery outline filled to pct.
+func battIcon(pct int) string {
+	return `<rect x="1.5" y="7" width="19" height="10" rx="1.5" fill="none" stroke="#000" stroke-width="2"/>` +
+		`<rect x="21" y="10" width="2" height="4"/>` +
+		fmt.Sprintf(`<rect x="3.5" y="9" width="%.1f" height="6"/>`, 15*float64(min(max(pct, 0), 100))/100)
+}
+
+func drawSVG(dst *image.Gray, body string, x, y, size int) {
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">` + body + `</svg>`
 	ic, err := oksvg.ReadIconStream(strings.NewReader(svg))
 	if err != nil {
 		return
@@ -253,20 +263,33 @@ func (a *App) button(img *image.Gray, r image.Rectangle, label string, active bo
 	a.tap(r, fn)
 }
 
-// status is the small footer line: version · battery · next update.
-func (a *App) status() string {
-	parts := []string{version}
-	if b := battery(); b != "" {
-		parts = append(parts, b)
+// drawStatus is the small footer line: version · battery · next update, then a struck
+// refresh icon when the last refresh failed. Returns where it ends.
+func (a *App) drawStatus(img *image.Gray, x, y int) int {
+	f := face(false, tTiny)
+	x = text(img, x, y, version, f, black)
+	if b, err := os.ReadFile(battDir + "capacity"); err == nil || fakeBattery != "" {
+		pct := strings.TrimSpace(string(b))
+		if err != nil {
+			pct = strings.TrimPrefix(fakeBattery, "pil %")
+		}
+		n, _ := strconv.Atoi(pct)
+		x = text(img, x, y, " · ", f, black)
+		drawSVG(img, battIcon(n), x, y-15, 20)
+		x = text(img, x+22, y, "%"+pct, f, black)
 	}
 	next := a.nextWake // set when going to sleep; while awake, derive it from the last refresh
 	if next.Before(a.updated) {
 		next = a.updated.Add(time.Duration(a.cfg.RefreshMin) * time.Minute)
 	}
 	if a.cfg.Sleep && next.After(clock()) {
-		parts = append(parts, "sonraki "+next.In(a.loc).Format("15:04"))
+		x = text(img, x, y, " · sonraki "+next.In(a.loc).Format("15:04"), f, black)
 	}
-	return strings.Join(parts, " · ")
+	if a.wErr != nil { // the last refresh failed: these numbers are old
+		icon(img, "refresh-off", x+8, y-16, 20)
+		x += 28
+	}
+	return x
 }
 
 // nav is the header every view shares: tabs · date + ISO week · next update/battery, Wi-Fi, refresh.

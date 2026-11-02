@@ -62,6 +62,7 @@ type Config struct {
 	TgToken       string // Telegram bot token for low-battery alerts ("" = off)
 	TgChat        string // chat id the alert goes to
 	TgThread      string // optional forum topic id
+	TgLogThread   string // forum topic for a silent message on every refresh ("" = off)
 	BattAlert     int    // alert at this %, again at half of it
 }
 
@@ -175,6 +176,8 @@ func loadConfig(path string) Config {
 			c.TgChat = v
 		case "TELEGRAM_THREAD":
 			c.TgThread = v
+		case "TELEGRAM_LOG_THREAD":
+			c.TgLogThread = v
 		case "BATT_ALERT":
 			c.BattAlert = int(num)
 		}
@@ -210,6 +213,7 @@ func setPlace(p *Place, k, v string, num float64) {
 type App struct {
 	cfg     Config
 	shown   []byte // pixels on the panel now: an identical frame isn't redrawn
+	wokeBy  string // what started this refresh: timer, button, touch, boot
 	loc     *time.Location
 	cal     Calendar
 	wDetail *Weather
@@ -273,27 +277,41 @@ func (a *App) refresh() {
 		a.updated = time.Now().Round(0) // wall clock only: monotonic time stops while suspended
 		return
 	}
+	wifi := time.Since(t0)
 	if onDevice() {
-		log.Printf("wifi: up in %v", time.Since(t0).Round(100*time.Millisecond))
+		log.Printf("wifi: up in %v", wifi.Round(100*time.Millisecond))
 	}
 	a.relocate()
-	a.batteryAlert()
-	if d, err := fetchSMHI(a.place, 8); err == nil {
-		a.wDetail, a.wErr = d, nil
+	// the fetches run side by side: every second saved here is a second less of Wi-Fi radio
+	var wg sync.WaitGroup
+	var w *Weather
+	var ws []Warning
+	var wErr, warnErr, calErr error
+	cal := a.forceCal || time.Since(a.calUpdated) >= time.Duration(a.cfg.CalRefreshMin)*time.Minute
+	run := func(f func()) { wg.Add(1); go func() { defer wg.Done(); f() }() }
+	run(a.batteryAlert)
+	run(func() { a.wakeReport(wifi) })
+	run(func() { w, wErr = fetchSMHI(a.place, 8) })
+	run(func() { ws, warnErr = fetchWarnings(a.region) })
+	if cal { // calendars change rarely: every CAL_REFRESH_MIN, or now when the refresh button asked
+		run(func() { calErr = a.cal.Refresh() })
+	}
+	wg.Wait()
+	if wErr == nil {
+		a.wDetail, a.wErr = w, nil
 		a.weatherAt = time.Now().Round(0)
 	} else {
-		a.wErr = err
+		a.wErr = wErr
 		log.Printf("weather: %v", a.wErr)
 	}
-	if ws, err := fetchWarnings(a.region); err == nil {
+	if warnErr == nil {
 		a.warnings = ws
 	} else {
-		log.Printf("warnings: %v", err) // keep the last known list
+		log.Printf("warnings: %v", warnErr) // keep the last known list
 	}
-	// calendars change rarely: every CAL_REFRESH_MIN, or now when the refresh button asked
-	if a.forceCal || time.Since(a.calUpdated) >= time.Duration(a.cfg.CalRefreshMin)*time.Minute {
-		if err := a.cal.Refresh(); err != nil {
-			log.Printf("calendar: %v", err)
+	if cal {
+		if calErr != nil {
+			log.Printf("calendar: %v", calErr)
 		} else {
 			a.calUpdated = time.Now().Round(0)
 		}
@@ -645,7 +663,7 @@ func main() {
 	if err != nil {
 		loc = time.UTC
 	}
-	a := &App{cfg: cfg, loc: loc, cal: Calendar{Feeds: cfg.Feeds, Holiday: cfg.Holiday}, place: cfg.Place, region: cfg.WarnRegion}
+	a := &App{cfg: cfg, loc: loc, cal: Calendar{Feeds: cfg.Feeds, Holiday: cfg.Holiday}, place: cfg.Place, region: cfg.WarnRegion, wokeBy: "açılış"}
 	a.loadLocation()
 	a.home()
 
@@ -713,6 +731,7 @@ func main() {
 			}
 		case p := <-taps:
 			lastTouch = time.Now()
+			a.wokeBy = "dokunma"
 			a.skipWake = false
 			for i := len(a.hits) - 1; i >= 0; i-- {
 				if p.In(a.hits[i].r) {
@@ -750,9 +769,12 @@ func main() {
 		}
 
 		// Power model: asleep unless someone is using it. Never while ssh'd in or Wi-Fi is pinned.
-		if cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() {
+		// A loop, not an if: after a timed wake it goes straight back down instead of
+		// idling with Wi-Fi up until the next 10 s tick.
+		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() {
 			sleepNow = false
 			woke := a.sleepUntil(a.wakeAt(a.updated.Add(refreshEvery)))
+			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu"}[woke]
 			resumed = time.Now()
 			if woke == "timer" {
 				lastTry = time.Now()
@@ -880,18 +902,7 @@ func (a *App) batteryAlert() {
 	last, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
 	send, next := alertStep(pct, a.cfg.BattAlert, last)
 	if send {
-		v := url.Values{"chat_id": {a.cfg.TgChat}, "text": {fmt.Sprintf("Kobo pano: pil %%%d, şarja tak.", pct)}}
-		if a.cfg.TgThread != "" {
-			v.Set("message_thread_id", a.cfg.TgThread)
-		}
-		resp, err := httpClient.PostForm("https://api.telegram.org/bot"+a.cfg.TgToken+"/sendMessage", v)
-		if err != nil {
-			log.Printf("telegram: send failed") // the error text carries the token in its URL
-			return
-		}
-		resp.Body.Close()
-		if resp.StatusCode != 200 {
-			log.Printf("telegram: HTTP %d", resp.StatusCode)
+		if !a.telegram(a.cfg.TgThread, fmt.Sprintf("Kobo pano: pil %%%d, şarja tak.", pct), false) {
 			return
 		}
 		log.Printf("telegram: battery alert at %d%%", pct)
@@ -899,4 +910,38 @@ func (a *App) batteryAlert() {
 	if next != last {
 		os.WriteFile(f, []byte(strconv.Itoa(next)), 0o644)
 	}
+}
+
+// telegram sends one message to a forum topic of TELEGRAM_CHAT; false if it didn't go.
+func (a *App) telegram(thread, text string, silent bool) bool {
+	if a.cfg.TgToken == "" || a.cfg.TgChat == "" {
+		return false
+	}
+	v := url.Values{"chat_id": {a.cfg.TgChat}, "text": {text}}
+	if thread != "" {
+		v.Set("message_thread_id", thread)
+	}
+	if silent {
+		v.Set("disable_notification", "true")
+	}
+	resp, err := httpClient.PostForm("https://api.telegram.org/bot"+a.cfg.TgToken+"/sendMessage", v)
+	if err != nil {
+		log.Printf("telegram: send failed") // the error text carries the token in its URL
+		return false
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		log.Printf("telegram: HTTP %d", resp.StatusCode)
+		return false
+	}
+	return true
+}
+
+// wakeReport is the silent per-refresh line: enough to see the battery curve and Wi-Fi times.
+func (a *App) wakeReport(wifi time.Duration) {
+	if a.cfg.TgLogThread == "" {
+		return
+	}
+	a.telegram(a.cfg.TgLogThread, fmt.Sprintf("Kobo pano %s · uyanış: %s · %s · Wi-Fi %v",
+		version, a.wokeBy, battery(), wifi.Round(100*time.Millisecond)), true)
 }

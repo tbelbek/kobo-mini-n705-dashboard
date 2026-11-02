@@ -47,4 +47,6 @@ TOUCH_MAXY=800
 #TELEGRAM_TOKEN=123456:ABC...
 #TELEGRAM_CHAT=123456789
 #TELEGRAM_THREAD=
+# A silent line per refresh (battery, Wi-Fi time) to this forum topic.
+#TELEGRAM_LOG_THREAD=
 #BATT_ALERT=20

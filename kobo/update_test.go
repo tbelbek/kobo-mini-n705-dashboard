@@ -64,3 +64,24 @@ func TestCheckUpdate(t *testing.T) {
 		})
 	}
 }
+
+func TestGetIfChanged(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(304)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		w.Write([]byte("body"))
+	}))
+	defer srv.Close()
+	f := filepath.Join(t.TempDir(), "etag")
+	b, etag, err := getIfChanged(srv.URL, f)
+	if err != nil || string(b) != "body" || etag != `"v1"` {
+		t.Fatalf("first: %q %q %v", b, etag, err)
+	}
+	os.WriteFile(f, []byte(etag), 0o644)
+	if b, _, err := getIfChanged(srv.URL, f); err != nil || b != nil {
+		t.Fatalf("second should be a 304: %q %v", b, err)
+	}
+}

@@ -14,7 +14,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,10 +39,13 @@ func (a *App) checkUpdate() bool {
 		log.Printf("update: no valid public key")
 		return false
 	}
-	b, err := get(a.cfg.UpdateAPI + "/repos/" + a.cfg.UpdateRepo + "/releases/latest")
+	b, etag, err := getIfChanged(a.cfg.UpdateAPI+"/repos/"+a.cfg.UpdateRepo+"/releases/latest", stateFile("update.etag"))
 	if err != nil {
 		log.Printf("update: %v", err)
 		return false
+	}
+	if b == nil {
+		return false // 304: same latest release as last time we looked
 	}
 	var rel struct {
 		Tag    string `json:"tag_name"`
@@ -49,7 +54,11 @@ func (a *App) checkUpdate() bool {
 			URL  string `json:"browser_download_url"`
 		} `json:"assets"`
 	}
-	if err := json.Unmarshal(b, &rel); err != nil || rel.Tag == "" || rel.Tag == version {
+	if err := json.Unmarshal(b, &rel); err != nil || rel.Tag == "" {
+		return false
+	}
+	if rel.Tag == version { // up to date: remember the ETag so the next check is a bodiless 304
+		os.WriteFile(stateFile("update.etag"), []byte(etag), 0o644)
 		return false
 	}
 	urls := map[string]string{}
@@ -127,4 +136,30 @@ func signFile(keyPath, file string) error {
 		return err
 	}
 	return os.WriteFile(file+".sig", ed25519.Sign(ed25519.PrivateKey(priv), data), 0644)
+}
+
+// getIfChanged is a conditional GET: with the ETag saved in etagFile, an unchanged
+// resource comes back as a bodiless 304 (and GitHub doesn't count it against the rate limit).
+// It returns a nil body for 304, and the new ETag otherwise; the caller decides whether to save it.
+func getIfChanged(u, etagFile string) ([]byte, string, error) {
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if e, _ := os.ReadFile(etagFile); len(e) > 0 {
+		req.Header.Set("If-None-Match", strings.TrimSpace(string(e)))
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case 304:
+		return nil, "", nil
+	case 200:
+		b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return b, resp.Header.Get("ETag"), err
+	}
+	return nil, "", fmt.Errorf("%s: HTTP %d", u, resp.StatusCode)
 }

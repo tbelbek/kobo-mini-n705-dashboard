@@ -106,3 +106,24 @@ func TestWakeAt(t *testing.T) {
 		}
 	}
 }
+
+func TestAlertStep(t *testing.T) {
+	for _, c := range []struct {
+		pct, last, wantNext int
+		send                bool
+	}{
+		{50, 0, 0, false},   // fine
+		{20, 0, 20, true},   // first warning
+		{18, 20, 20, false}, // already told
+		{10, 20, 10, true},  // second warning
+		{5, 10, 10, false},
+		{25, 10, 10, false}, // charging, not yet full enough to rearm
+		{31, 10, 0, false},  // charged: rearm
+		{8, 0, 10, true},    // woke up already very low: one message, not two
+	} {
+		send, next := alertStep(c.pct, 20, c.last)
+		if send != c.send || next != c.wantNext {
+			t.Errorf("alertStep(%d, 20, %d) = %v,%d; want %v,%d", c.pct, c.last, send, next, c.send, c.wantNext)
+		}
+	}
+}

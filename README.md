@@ -34,6 +34,7 @@ The device is asleep most of the time and the last frame stays on the panel (e-i
 - Touch can't wake the Mini from suspend: only the keypad and USB are wakeup sources.
 - While awake the CPU uses the `conservative` governor (InkBox pins it at 800 MHz) and Wi-Fi is off unless needed.
 - It never suspends while an ssh session is open or Wi-Fi is pinned on.
+- **Low-battery alert** (optional): set `TELEGRAM_TOKEN` (a bot from @BotFather) and `TELEGRAM_CHAT` (plus `TELEGRAM_THREAD` for a forum topic) and it sends one Telegram message when the battery drops to `BATT_ALERT` (20%), and one more at half of that. It rearms once the battery is back above `BATT_ALERT`+10.
 
 Battery life on the 1000 mAh (3.7 Wh) cell is still being measured: every sleep and wake line in the log ends with the battery level, so the drain per day can be read off `kobodash.log`. A rough estimate is a week or more at hourly updates. Measurements will be added here once there are numbers.
 

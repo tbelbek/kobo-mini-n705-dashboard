@@ -41,3 +41,10 @@ TOUCH_SWAP=1
 TOUCH_INVX=1
 TOUCH_MAXX=600
 TOUCH_MAXY=800
+
+# Low-battery alert over Telegram (off unless both are set). Token from @BotFather;
+# the chat id of you or a group. BATT_ALERT warns at this %, and again at half of it.
+#TELEGRAM_TOKEN=123456:ABC...
+#TELEGRAM_CHAT=123456789
+#TELEGRAM_THREAD=
+#BATT_ALERT=20

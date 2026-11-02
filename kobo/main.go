@@ -16,6 +16,7 @@ import (
 	"image/png"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -53,6 +54,10 @@ type Config struct {
 	UpdatePubKey  string // hex ed25519 public key that release binaries must verify against
 	UpdateHours   int
 	UpdateAPI     string // GitHub API base (tests point it at a local server)
+	TgToken       string // Telegram bot token for low-battery alerts ("" = off)
+	TgChat        string // chat id the alert goes to
+	TgThread      string // optional forum topic id
+	BattAlert     int    // alert at this %, again at half of it
 }
 
 func loadConfig(path string) Config {
@@ -68,6 +73,7 @@ func loadConfig(path string) Config {
 		Rotate:        "cw",
 		RefreshMin:    120, // battery first: each wake costs a Wi-Fi association
 		CalRefreshMin: 240,
+		BattAlert:     20,
 		IdleBackMin:   3,
 		WifiIdleMin:   10,
 		Sleep:         true,
@@ -158,6 +164,14 @@ func loadConfig(path string) Config {
 			c.UpdateHours = int(num)
 		case "WARN_REGION":
 			c.WarnRegion, c.WarnSet = v, true
+		case "TELEGRAM_TOKEN":
+			c.TgToken = v
+		case "TELEGRAM_CHAT":
+			c.TgChat = v
+		case "TELEGRAM_THREAD":
+			c.TgThread = v
+		case "BATT_ALERT":
+			c.BattAlert = int(num)
 		}
 	}
 	for _, p := range []struct {
@@ -253,6 +267,7 @@ func (a *App) refresh() {
 		return
 	}
 	a.relocate()
+	a.batteryAlert()
 	if d, err := fetchSMHI(a.place, 8); err == nil {
 		a.wDetail, a.wErr = d, nil
 		a.weatherAt = time.Now().Round(0)
@@ -739,4 +754,58 @@ func runCmd(name string, args ...string) error {
 		return fmt.Errorf("%s: %v %s", name, err, out)
 	}
 	return nil
+}
+
+// alertStep decides whether a battery reading is worth a message. last is the
+// lowest level already reported (0 = none); it resets once the cell is charged.
+func alertStep(pct, at, last int) (send bool, next int) {
+	switch {
+	case pct > at+10:
+		return false, 0
+	case pct <= at/2 && (last == 0 || last > at/2):
+		return true, at / 2
+	case pct <= at && last == 0:
+		return true, at
+	}
+	return false, last
+}
+
+// batteryAlert sends a Telegram message when the battery drops past BATT_ALERT
+// and again past half of it. Runs while Wi-Fi is up, so a missed send retries next wake.
+func (a *App) batteryAlert() {
+	if a.cfg.TgToken == "" || a.cfg.TgChat == "" {
+		return
+	}
+	b, err := os.ReadFile("/sys/class/power_supply/mc13892_bat/capacity")
+	if err != nil {
+		return
+	}
+	pct, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return
+	}
+	f := stateFile("battalert")
+	raw, _ := os.ReadFile(f)
+	last, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	send, next := alertStep(pct, a.cfg.BattAlert, last)
+	if send {
+		v := url.Values{"chat_id": {a.cfg.TgChat}, "text": {fmt.Sprintf("Kobo pano: pil %%%d, şarja tak.", pct)}}
+		if a.cfg.TgThread != "" {
+			v.Set("message_thread_id", a.cfg.TgThread)
+		}
+		resp, err := httpClient.PostForm("https://api.telegram.org/bot"+a.cfg.TgToken+"/sendMessage", v)
+		if err != nil {
+			log.Printf("telegram: send failed") // the error text carries the token in its URL
+			return
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			log.Printf("telegram: HTTP %d", resp.StatusCode)
+			return
+		}
+		log.Printf("telegram: battery alert at %d%%", pct)
+	}
+	if next != last {
+		os.WriteFile(f, []byte(strconv.Itoa(next)), 0o644)
+	}
 }

@@ -150,19 +150,33 @@ func trialStart() {
 	if n < trialStarts {
 		return
 	}
+	if trialRollback(fmt.Sprintf("restarted %d times without a full sleep cycle", n)) {
+		exit(0) // supervise.sh starts the previous binary
+	}
+}
+
+// onTrial: this binary is a release still on trial.
+func onTrial() bool {
+	t, err := os.ReadFile(filepath.Join(updateDir, "trying"))
+	return err == nil && strings.TrimSpace(string(t)) == version
+}
+
+// trialRollback puts the previous binary back in place of this one (on trial) and
+// rejects this release. True if the previous binary is now in place.
+func trialRollback(why string) bool {
 	cur := filepath.Join(updateDir, "kobodash")
 	if _, err := os.Stat(cur + ".prev"); err != nil {
-		log.Printf("update: %s restarted %d times on trial, but no previous binary to go back to", tag, n)
-		rejectTrial(tag)
-		return
+		log.Printf("update: %s %s, but no previous binary to go back to", version, why)
+		rejectTrial(version)
+		return false
 	}
-	log.Printf("update: %s restarted %d times without a full sleep cycle: rolling back", tag, n)
+	log.Printf("update: %s %s: rolling back", version, why)
 	if err := os.Rename(cur+".prev", cur); err != nil {
 		log.Printf("update: rollback: %v", err)
-		return
+		return false
 	}
-	rejectTrial(tag)
-	exit(0) // supervise.sh starts the previous binary
+	rejectTrial(version)
+	return true
 }
 
 var exit = os.Exit // tests replace it
@@ -184,6 +198,8 @@ func trialStopped() {
 
 // trialPassed: the new release slept and woke once, so it stays.
 func trialPassed() {
+	healMu.Lock()
+	defer healMu.Unlock()
 	if os.Remove(filepath.Join(updateDir, "trying")) == nil {
 		log.Printf("update: %s passed its first sleep cycle", version)
 	}

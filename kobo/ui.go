@@ -297,7 +297,7 @@ func (a *App) nav(img *image.Gray) {
 	})
 	wr := image.Rect(W-120, 4, W-72, 46)
 	wifi := "wifi"
-	a.shownOnline = online()
+	a.shownOnline = online() && !a.sleeping
 	if !a.shownOnline {
 		wifi = "wifi-off"
 	}

@@ -10,7 +10,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -243,6 +243,7 @@ type App struct {
 	wifiPinned  bool      // switched on by hand: stays up until tapped again
 	skipWake    bool      // this tap switched Wi-Fi off; don't let it wake the radio again
 	shownOnline bool      // Wi-Fi state in the last drawn frame
+	sleeping    bool      // drawing the frame that stays up while asleep: Wi-Fi shown off
 	busy        bool      // refresh button pressed, fetch in progress
 	weatherAt   time.Time // last successful weather fetch
 
@@ -284,6 +285,7 @@ func (a *App) refresh() {
 		a.updated = time.Now().Round(0) // wall clock only: monotonic time stops while suspended
 		return
 	}
+	beat()
 	wifi := time.Since(t0)
 	if onDevice() {
 		log.Printf("wifi: up in %v", wifi.Round(100*time.Millisecond))
@@ -519,10 +521,32 @@ func hasDefaultRoute(table string) bool {
 // Bounded: on 2 Nov a v0.7.11 process logged nothing after its first refresh and
 // never reached "sleep:" for 5 hours; toggle.sh off is the blocking call on that path.
 func wifiDown() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := exec.CommandContext(ctx, "/usr/local/bin/wifi/toggle.sh", "off").Run(); err != nil {
+	if _, err := runBounded(30*time.Second, "/usr/local/bin/wifi/toggle.sh", "off"); err != nil {
 		log.Printf("wifi off: %v", err)
+	}
+}
+
+// runBounded runs a command but gives up waiting after d. A process stuck in the kernel
+// (an e-ink update that never completes, an rmmod) can't be killed, and waiting for it
+// would stall the main loop with Wi-Fi already off: the device would neither sleep nor
+// be reachable. Past d it is left behind and the loop goes on.
+func runBounded(d time.Duration, name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // its own group: a timeout kills the children too
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return out.Bytes(), err
+	case <-time.After(d):
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		noteLeftBehind(filepath.Base(name)) // several of these is trouble the watchdog handles
+		return nil, fmt.Errorf("%s: no exit after %v, killed", filepath.Base(name), d)
 	}
 }
 
@@ -586,7 +610,7 @@ func (a *App) show() {
 		return
 	}
 	// -f: full flashing refresh, clears ghosting on every page change
-	if out, err := exec.Command(a.cfg.Fbink, "-q", "-f", "-g", "file="+framePath).CombinedOutput(); err != nil {
+	if out, err := runBounded(30*time.Second, a.cfg.Fbink, "-q", "-f", "-g", "file="+framePath); err != nil {
 		log.Printf("fbink: %v %s", err, out)
 		return
 	}
@@ -666,6 +690,7 @@ func main() {
 	genkey := flag.String("genkey", "", "release tooling: write a new ed25519 private key here, print the public key")
 	sign := flag.String("sign", "", "release tooling: sign the file given as argument with this private key")
 	showVersion := flag.Bool("version", false, "print version")
+	wdTest := flag.Bool("watchdogtest", false, "on the device: start, then hang the main loop; the watchdog must reboot within ~3 min")
 	flag.Parse()
 
 	switch {
@@ -727,6 +752,14 @@ func main() {
 		}
 	}
 	log.Printf("kobodash %s starting", version)
+	if onDevice() && *wdTest {
+		startWatchdog(2 * time.Minute)
+		log.Printf("watchdog test: main loop hangs now")
+		select {}
+	}
+	if onDevice() && cfg.Sleep {
+		startWatchdog(watchdogStuck)
+	}
 	if onDevice() {
 		trialStart()
 		stop := make(chan os.Signal, 1)
@@ -782,6 +815,7 @@ func main() {
 	awakeIdle := time.Duration(cfg.AwakeSec) * time.Second
 	sleepNow := false
 	for {
+		beat()
 		select {
 		case <-keys:
 			if time.Since(resumed) > 3*time.Second { // the press that woke us is delivered after resume; ignore it
@@ -822,7 +856,7 @@ func main() {
 				lastBeat = time.Now()
 				log.Printf("awake: idle %v, ssh %v, pinned %v, online %v %s", time.Since(lastTouch).Round(time.Second), sshActive(), a.wifiPinned, online(), battery())
 			}
-			if !cfg.WifiAlways && !a.wifiPinned && online() && time.Since(lastTouch) > wifiIdle && !sshActive() {
+			if !cfg.WifiAlways && !a.wifiPinned && online() && time.Since(lastTouch) > wifiIdle && !sshActive() && !holdAwake.Load() {
 				wifiDown()
 			}
 			if online() != a.shownOnline {
@@ -833,7 +867,7 @@ func main() {
 		// Power model: asleep unless someone is using it. Never while ssh'd in or Wi-Fi is pinned.
 		// A loop, not an if: after a timed wake it goes straight back down instead of
 		// idling with Wi-Fi up until the next 10 s tick.
-		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() {
+		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() && !holdAwake.Load() {
 			sleepNow = false
 			woke := a.sleepUntil(a.nextSlot(a.updated))
 			if woke != "error" {
@@ -905,12 +939,25 @@ func (a *App) wakeAt(due time.Time) time.Time {
 func (a *App) sleepUntil(due time.Time) string {
 	a.nextWake = due
 	a.home()
+	// draw first, Wi-Fi off last: if anything on the way down hangs or fails, the device
+	// is still reachable instead of awake with its radio off
+	a.sleeping = true
+	defer func() { a.sleeping = false }()
 	t := time.Now()
-	wifiDown()
-	log.Printf("sleep: wifi off took %v", time.Since(t).Round(100*time.Millisecond))
-	t = time.Now()
 	a.show() // this frame stays on the panel while asleep
 	log.Printf("sleep: drawing took %v", time.Since(t).Round(100*time.Millisecond))
+	beat()
+	if holdAwake.Load() { // the watchdog gave up on the way down: stay reachable
+		return "error"
+	}
+	t = time.Now()
+	wifiDown()
+	log.Printf("sleep: wifi off took %v", time.Since(t).Round(100*time.Millisecond))
+	beat()
+	if holdAwake.Load() {
+		reconnectWifi()
+		return "error"
+	}
 	due = due.Round(0)
 	d := due.Sub(time.Now().Round(0))
 	if d < 30*time.Second {
@@ -918,6 +965,7 @@ func (a *App) sleepUntil(due time.Time) string {
 	}
 	if _, err := setWakeAlarm(d); err != nil {
 		log.Printf("alarm: %v", err) // never suspend without a way back
+		awakeAfterFailedSleep()
 		return "error"
 	}
 	log.Printf("sleep: alarm in %v (next update %s) %s", d.Round(time.Second), due.In(a.loc).Format("15:04:05"), battery())
@@ -927,14 +975,23 @@ func (a *App) sleepUntil(due time.Time) string {
 		// gave up on a task, ~2 s = a lock or a driver; the kernel log names the task or driver
 		log.Printf("suspend: %v after %v", err, time.Now().Round(0).Sub(start).Round(100*time.Millisecond))
 		kernelLog("suspend-fail.log", 300)
+		awakeAfterFailedSleep()
 		return "error"
 	}
+	noteSuspend(true)
 	woke := "button"
 	if time.Now().Round(0).After(due.Add(-45 * time.Second)) {
 		woke = "timer"
 	}
 	log.Printf("woke: %s after %v %s", woke, time.Now().Round(0).Sub(start).Round(time.Second), battery())
 	return woke
+}
+
+// awakeAfterFailedSleep: staying awake after all, so be reachable (Wi-Fi back on) and
+// let the watchdog count it.
+func awakeAfterFailedSleep() {
+	reconnectWifi()
+	noteSuspend(false)
 }
 
 // kernelLog appends the tail of the kernel log to a card file (kept small).

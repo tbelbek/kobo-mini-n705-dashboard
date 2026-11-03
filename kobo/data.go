@@ -738,6 +738,7 @@ func (c *Calendar) Refresh() error {
 	}
 	var firstErr error
 	for _, u := range append(append([]string{}, c.Feeds...), c.Holiday) {
+		beat() // each feed may take its full HTTP timeout; the watchdog must not count that as a hang
 		if u == "" {
 			continue
 		}

@@ -761,7 +761,6 @@ func main() {
 		}
 	}
 	wifiIdle := time.Duration(cfg.WifiIdleMin) * time.Minute
-	refreshEvery := time.Duration(cfg.RefreshMin) * time.Minute
 	awakeIdle := time.Duration(cfg.AwakeSec) * time.Second
 	sleepNow := false
 	for {
@@ -793,7 +792,7 @@ func main() {
 				a.home() // nobody is looking: back to today
 				a.show()
 			}
-			due := time.Since(a.updated) >= time.Duration(cfg.RefreshMin)*time.Minute
+			due := !time.Now().Before(a.nextSlot(a.updated))
 			retry := a.wErr != nil && time.Since(lastTry) >= time.Minute
 			if due || retry {
 				lastTry = time.Now()
@@ -818,7 +817,7 @@ func main() {
 		// idling with Wi-Fi up until the next 10 s tick.
 		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() {
 			sleepNow = false
-			woke := a.sleepUntil(a.wakeAt(a.updated.Add(refreshEvery)))
+			woke := a.sleepUntil(a.nextSlot(a.updated))
 			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu"}[woke]
 			resumed = time.Now()
 			if woke == "timer" {
@@ -836,6 +835,23 @@ func main() {
 			}
 		}
 	}
+}
+
+// nextSlot: the timed wake after a refresh at t. Wakes sit on a fixed clock grid
+// (REFRESH_MIN=120: 06:00, 08:00, ... 22:00) so a power-button wake in between doesn't
+// shift them; a refresh up to 2 min before a slot (an early RTC wake) counts as that slot.
+func (a *App) nextSlot(t time.Time) time.Time {
+	every := time.Duration(a.cfg.RefreshMin) * time.Minute
+	if every <= 0 || t.IsZero() { // never refreshed: due now
+		return t
+	}
+	t = t.Add(2 * time.Minute)
+	l := t.In(a.loc)
+	s := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, a.loc) // ponytail: grid restarts at midnight; fine while REFRESH_MIN divides 24 h
+	for !s.After(t) {
+		s = s.Add(every)
+	}
+	return a.wakeAt(s)
 }
 
 // wakeAt: due, or the end of the quiet hours when due falls inside them.

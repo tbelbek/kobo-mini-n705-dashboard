@@ -263,7 +263,7 @@ func (a *App) drawStatus(img *image.Gray, x, y int) int {
 	}
 	next := a.nextWake // set when going to sleep; while awake, derive it from the last refresh
 	if next.Before(a.updated) {
-		next = a.updated.Add(time.Duration(a.cfg.RefreshMin) * time.Minute)
+		next = a.nextSlot(a.updated)
 	}
 	if a.cfg.Sleep && next.After(clock()) {
 		x = text(img, x, y, " · sonraki "+next.In(a.loc).Format("15:04"), f, black)

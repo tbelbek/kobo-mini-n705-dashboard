@@ -109,6 +109,28 @@ func TestWakeAt(t *testing.T) {
 	}
 }
 
+// Timed wakes stay on the 2-hour grid whatever time the last refresh ran.
+func TestNextSlot(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	a := &App{loc: loc, cfg: Config{QuietFrom: 23, QuietTo: 6, RefreshMin: 120}}
+	at := func(s string) time.Time { v, _ := time.ParseInLocation("2006-01-02 15:04:05", s, loc); return v }
+	for _, c := range [][2]string{
+		{"2026-11-03 06:00:20", "2026-11-03 08:00:00"}, // timed wake
+		{"2026-11-03 06:50:10", "2026-11-03 08:00:00"}, // power button in between: no shift
+		{"2026-11-03 07:58:30", "2026-11-03 10:00:00"}, // just before a slot counts as it
+		{"2026-11-03 07:57:00", "2026-11-03 08:00:00"},
+		{"2026-11-03 22:00:15", "2026-11-04 06:00:00"}, // 00:00 is in quiet hours
+		{"2026-11-04 01:30:00", "2026-11-04 06:00:00"},
+	} {
+		if got := a.nextSlot(at(c[0])); !got.Equal(at(c[1])) {
+			t.Errorf("%s -> %s, want %s", c[0], got.Format("01-02 15:04:05"), c[1])
+		}
+	}
+	if !a.nextSlot(time.Time{}).IsZero() {
+		t.Error("never refreshed must be due now")
+	}
+}
+
 func TestAlertStep(t *testing.T) {
 	for _, c := range []struct {
 		pct, last, wantNext int

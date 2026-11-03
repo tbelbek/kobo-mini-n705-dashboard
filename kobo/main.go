@@ -233,7 +233,6 @@ type App struct {
 	warnings    []Warning
 	calUpdated  time.Time
 	forceCal    bool // refresh button: fetch calendars too, not just weather
-	wantUpdate  bool // refresh button: also check for a new release right away
 	wifiPinned  bool // switched on by hand: stays up until tapped again, or pinLease
 	pinnedAt    time.Time
 	skipWake    bool          // this tap switched Wi-Fi off; don't let it wake the radio again

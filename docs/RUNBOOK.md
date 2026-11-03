@@ -93,7 +93,15 @@ On the device itself: a short power-button press wakes it; if it doesn't react w
 
 ## Test settings
 
-Append to `/opt/kobodash/dash.conf` (later keys win), restart kobodash (not supervise: `killall kobodash`), and delete the lines when done:
+**Sleep test that ends by itself** (no config edits, no restart, runs under supervise):
+
+```bash
+ssh $DEV 'echo 10 > /tmp/p3/rootfs/write/opt/kobodash/test-cycles'
+```
+
+The next 10 sleeps last 3 minutes each, on the charger too, and each wake does the full Wi-Fi and refresh round. The log shows `test: cycle done, N left` per wake. The file goes after the last cycle, or after 30 minutes without a timed wake. Keep ssh closed meanwhile: an open session keeps it awake.
+
+For longer experiments, append to `/opt/kobodash/dash.conf` (later keys win), restart kobodash (not supervise: `killall kobodash`), and delete the lines when done:
 
 ```
 REFRESH_MIN=3

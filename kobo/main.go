@@ -1083,6 +1083,7 @@ func main() {
 	wifiIdle := time.Duration(cfg.WifiIdleMin) * time.Minute
 	awakeIdle := time.Duration(cfg.AwakeSec) * time.Second
 	sleepNow := false
+	var testDue time.Time // the sleep test's next wake (testLeft)
 	for {
 		beat()
 		select {
@@ -1142,9 +1143,20 @@ func main() {
 		// press still puts it down). Never while ssh'd in or Wi-Fi is pinned.
 		// A loop, not an if: after a timed wake it goes straight back down instead of
 		// idling with Wi-Fi up until the next 10 s tick.
-		for cfg.Sleep && (sleepNow || (time.Since(lastTouch) > awakeIdle && !onCharger())) && !a.wifiPinned && !a.sshHold() && !holdAwake.Load() {
+		for cfg.Sleep && (sleepNow || (time.Since(lastTouch) > awakeIdle && (!onCharger() || testLeft() > 0))) && !a.wifiPinned && !a.sshHold() && !holdAwake.Load() {
 			sleepNow = false
-			woke := a.sleepUntil(a.nextSlot(a.updated))
+			due, test := a.nextSlot(a.updated), testLeft()
+			if test > 0 {
+				if testDue.IsZero() { // set once per cycle: a charger wake must not push it back
+					testDue = time.Now().Add(testEvery)
+				}
+				due = testDue
+			}
+			woke := a.sleepUntil(due)
+			if test > 0 && woke == "timer" {
+				testDone(test)
+				testDue = time.Time{}
+			}
 			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu", "usb": "şarj kablosu"}[woke]
 			resumed = time.Now()
 			if woke == "usb" { // the charger, not a person: straight back to the same slot
@@ -1174,6 +1186,40 @@ func main() {
 				resumed = time.Now()
 			}
 		}
+	}
+}
+
+// A sleep test without anyone at the device: the card file test-cycles holds N, and the next
+// N sleeps last testEvery each (on the charger too, quiet hours or not), each wake doing
+// the full Wi-Fi and refresh round. The file goes after the last one, or once it has not
+// moved for testStale (no timed wake got through): it ends by itself.
+const testEvery, testStale = 3 * time.Minute, 30 * time.Minute
+
+func testLeft() int {
+	p := stateFile("test-cycles")
+	st, err := os.Stat(p)
+	if err != nil {
+		return 0
+	}
+	if time.Since(st.ModTime()) > testStale {
+		log.Printf("test: no timed wake for %v, ending it", testStale)
+		rmState("test-cycles")
+		return 0
+	}
+	b, _ := os.ReadFile(p)
+	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return n
+}
+
+func testDone(n int) {
+	log.Printf("test: cycle done, %d left", n-1)
+	if n <= 1 {
+		rmState("test-cycles")
+		return
+	}
+	if err := writeAtomic(stateFile("test-cycles"), strconv.Itoa(n-1)); err != nil {
+		log.Printf("test: %v; ending it", err)
+		rmState("test-cycles")
 	}
 }
 

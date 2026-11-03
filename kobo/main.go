@@ -839,13 +839,18 @@ func main() {
 
 // nextSlot: the timed wake after a refresh at t. Wakes sit on a fixed clock grid
 // (REFRESH_MIN=120: 06:00, 08:00, ... 22:00) so a power-button wake in between doesn't
-// shift them; a refresh up to 2 min before a slot (an early RTC wake) counts as that slot.
+// shift them; a refresh up to 30 min before a slot counts as that slot (a quarter of the
+// interval when that is shorter, so a 3-minute test loop still runs).
 func (a *App) nextSlot(t time.Time) time.Time {
 	every := time.Duration(a.cfg.RefreshMin) * time.Minute
 	if every <= 0 || t.IsZero() { // never refreshed: due now
 		return t
 	}
-	t = t.Add(2 * time.Minute)
+	early := 30 * time.Minute
+	if early > every/4 {
+		early = every / 4
+	}
+	t = t.Add(early)
 	l := t.In(a.loc)
 	s := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, a.loc) // ponytail: grid restarts at midnight; fine while REFRESH_MIN divides 24 h
 	for !s.After(t) {

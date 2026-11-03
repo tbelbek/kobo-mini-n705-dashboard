@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -137,5 +139,19 @@ func TestHasDefaultRoute(t *testing.T) {
 	}
 	if !hasDefaultRoute(hdr + link + def) {
 		t.Error("default route not found")
+	}
+}
+
+func TestStamped(t *testing.T) {
+	var b bytes.Buffer
+	w := &stamped{w: &b, t0: time.Now(), bol: true}
+	for _, c := range []string{"Turning Wi", "-Fi ON\nSending disc", "over...\n"} {
+		if n, err := w.Write([]byte(c)); n != len(c) || err != nil {
+			t.Fatalf("Write(%q) = %d, %v", c, n, err)
+		}
+	}
+	got := b.String()
+	if !strings.HasPrefix(got, "+ 0.00s Turning Wi-Fi ON\n+ 0.00s Sending discover...\n") || strings.Count(got, "+") != 2 {
+		t.Errorf("stamped output %q", got)
 	}
 }

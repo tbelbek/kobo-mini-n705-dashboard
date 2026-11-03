@@ -399,7 +399,9 @@ func stateFile(name string) string {
 // to run twice, so overlapping calls are harmless.
 func reconnectWifi() {
 	t0 := time.Now()
-	cmd := exec.Command("sh", "-c", `. /opt/kobodash/kobodash.conf; /usr/local/bin/wifi/toggle.sh on; echo "toggle on: $?"; `+
+	// trap '' PIPE: inherited by every child, so if this process dies (update, crash) while the
+	// backgrounded udhcpc still holds the log pipe, its scripts get EPIPE instead of being killed.
+	cmd := exec.Command("sh", "-c", `trap '' PIPE; . /opt/kobodash/kobodash.conf; /usr/local/bin/wifi/toggle.sh on; echo "toggle on: $?"; `+
 		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"; echo "connect: $?"`)
 	// the scripts' output goes to the card: when a wake gets no address, this is the only trace
 	wl := stateFile("wifi.log")
@@ -407,24 +409,72 @@ func reconnectWifi() {
 		os.Rename(wl, wl+".old")
 	}
 	f, _ := os.OpenFile(wl, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	// Each line is stamped with seconds since t0, to show which step (module, scan, DHCP)
+	// the time goes to. Our own pipe, read to EOF: udhcpc forks into the background with
+	// this stdout, and closing the read end under it would kill it with SIGPIPE.
+	var pr, pw *os.File
 	if f != nil {
 		fmt.Fprintf(f, "== %s connect\n", time.Now().UTC().Format("2006-01-02 15:04:05"))
-		cmd.Stdout, cmd.Stderr = f, f
+		var err error
+		if pr, pw, err = os.Pipe(); err == nil {
+			cmd.Stdout, cmd.Stderr = pw, pw
+		} else {
+			cmd.Stdout, cmd.Stderr = f, f
+		}
 	}
-	if err := cmd.Start(); err != nil {
+	err := cmd.Start()
+	if pw != nil {
+		pw.Close() // the children hold their own copies
+	}
+	if err != nil {
 		log.Printf("wifi: start: %v", err)
+		if pr != nil {
+			pr.Close()
+		}
 		if f != nil {
 			f.Close()
 		}
 		return
 	}
 	go func() {
-		err := cmd.Wait() // exit 255 = connect_to_network.sh thinks another copy is running
-		log.Printf("wifi: connect script done after %v: %v", time.Since(t0).Round(100*time.Millisecond), err)
+		if pr != nil {
+			io.Copy(&stamped{w: f, t0: t0, bol: true}, pr) // ends when the last child lets go
+			pr.Close()
+		}
 		if f != nil {
 			f.Close()
 		}
 	}()
+	go func() {
+		err := cmd.Wait() // exit 255 = connect_to_network.sh thinks another copy is running
+		log.Printf("wifi: connect script done after %v: %v", time.Since(t0).Round(100*time.Millisecond), err)
+	}()
+}
+
+// stamped prefixes every line written through it with the seconds since t0. It never reports
+// a write error (a full card, say): io.Copy would stop draining the pipe and block the scripts.
+type stamped struct {
+	w   io.Writer
+	t0  time.Time
+	bol bool
+}
+
+func (s *stamped) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		if s.bol {
+			fmt.Fprintf(s.w, "+%5.2fs ", time.Since(s.t0).Seconds())
+			s.bol = false
+		}
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			s.w.Write(p)
+			break
+		}
+		s.w.Write(p[:i+1])
+		p, s.bol = p[i+1:], true
+	}
+	return n, nil
 }
 
 // wifiUp brings the radio up and waits until it can reach the internet: udhcpc sets
@@ -808,10 +858,12 @@ func (a *App) wakeAt(due time.Time) time.Time {
 func (a *App) sleepUntil(due time.Time) string {
 	a.nextWake = due
 	a.home()
-	log.Printf("sleep: wifi off")
+	t := time.Now()
 	wifiDown()
-	log.Printf("sleep: drawing")
+	log.Printf("sleep: wifi off took %v", time.Since(t).Round(100*time.Millisecond))
+	t = time.Now()
 	a.show() // this frame stays on the panel while asleep
+	log.Printf("sleep: drawing took %v", time.Since(t).Round(100*time.Millisecond))
 	due = due.Round(0)
 	d := due.Sub(time.Now().Round(0))
 	if d < 30*time.Second {
@@ -824,7 +876,10 @@ func (a *App) sleepUntil(due time.Time) string {
 	log.Printf("sleep: alarm in %v (next update %s) %s", d.Round(time.Second), due.In(a.loc).Format("15:04:05"), battery())
 	start := time.Now().Round(0) // wall clock; monotonic time stops in suspend
 	if err := suspend(); err != nil {
-		log.Printf("suspend: %v", err)
+		// how long the kernel tried tells the cause apart: ~22 s (2 s settle + 20 s) = the freezer
+		// gave up on a task, ~2 s = a lock or a driver; the kernel log names the task or driver
+		log.Printf("suspend: %v after %v", err, time.Now().Round(0).Sub(start).Round(100*time.Millisecond))
+		kernelLog("suspend-fail.log", 300)
 		return "error"
 	}
 	woke := "button"
@@ -833,6 +888,46 @@ func (a *App) sleepUntil(due time.Time) string {
 	}
 	log.Printf("woke: %s after %v %s", woke, time.Now().Round(0).Sub(start).Round(time.Second), battery())
 	return woke
+}
+
+// kernelLog appends the tail of the kernel log to a card file (kept small).
+func kernelLog(name string, lines int) {
+	out, err := exec.Command("dmesg").Output()
+	if err != nil {
+		log.Printf("dmesg: %v", err)
+		return
+	}
+	l := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(l) > lines {
+		l = l[len(l)-lines:]
+	}
+	p := stateFile(name)
+	if st, err := os.Stat(p); err == nil && st.Size() > 128<<10 {
+		os.Rename(p, p+".old")
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "== %s\n%s\n", time.Now().UTC().Format("2006-01-02 15:04:05"), strings.Join(l, "\n"))
+	// tasks not plainly sleeping, with where they wait in the kernel; names only, never the
+	// command line (connect_to_network.sh carries the Wi-Fi password in its arguments)
+	fmt.Fprintln(f, "-- pid comm state wchan (state != S)")
+	dirs, _ := os.ReadDir("/proc")
+	for _, d := range dirs {
+		if d.Name()[0] < '1' || d.Name()[0] > '9' {
+			continue
+		}
+		st, _ := os.ReadFile("/proc/" + d.Name() + "/stat")
+		i := bytes.LastIndexByte(st, ')')
+		if i < 0 || i+2 >= len(st) || st[i+2] == 'S' {
+			continue
+		}
+		comm, _ := os.ReadFile("/proc/" + d.Name() + "/comm")
+		wchan, _ := os.ReadFile("/proc/" + d.Name() + "/wchan")
+		fmt.Fprintf(f, "%s %s %c %s\n", d.Name(), bytes.TrimSpace(comm), st[i+2], wchan)
+	}
 }
 
 // readPowerKey reports power-button presses (the Mini's only key, on mxckpd).

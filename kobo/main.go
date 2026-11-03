@@ -812,6 +812,22 @@ func ensureScaling() {
 	}
 }
 
+// quietWakes takes the charger out of the wake sources: the N705's micro-USB socket is
+// loose, and every jiggle was a wake, or a refused suspend. The power key and the RTC
+// alarm stay. USB wake is the stock sysfs switch, written again before every suspend since
+// a re-probed USB driver starts with it on; acin_wake exists only on our kernel
+// (kobo-kernel, power-n705), so on the stock one that write fails and nothing changes.
+func quietWakes() (usb int, acin error) {
+	paths, _ := filepath.Glob("/sys/devices/platform/fsl-usb2-*/power/wakeup")
+	ehci, _ := filepath.Glob("/sys/devices/platform/fsl-ehci*/power/wakeup")
+	for _, p := range append(paths, ehci...) {
+		if os.WriteFile(p, []byte("disabled"), 0644) == nil {
+			usb++
+		}
+	}
+	return usb, os.WriteFile("/sys/module/mx50_ntx_io/parameters/acin_wake", []byte("0"), 0644)
+}
+
 const framePath = "/tmp/kobodash.png"
 
 func (a *App) show() {
@@ -1054,6 +1070,8 @@ func main() {
 	a.keys = keys
 
 	ensureScaling()
+	usb, acin := quietWakes()
+	log.Printf("charger wake off: %d usb switches, acin_wake: %v", usb, acin)
 	updated, _ := os.ReadFile(stateFile("updated")) // set by the binary that installed us
 	rmState("updated")
 	if len(updated) > 0 {

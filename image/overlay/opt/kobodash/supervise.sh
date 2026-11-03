@@ -30,8 +30,14 @@ RESCUE_NONET=${KD_NONET:-300}
 RESCUE_STALE=${KD_STALE:-720}
 RESCUE_HOLD=${KD_HOLD:-3600}
 RESCUE_MAX=3 # reboots per 24 h
+BACKOFF=${KD_BACKOFF:-"3 10 30 60"} # seconds before restart number 1, 2, 3, 4 and on
 
 echo $$ >"$PIDFILE" # deploy.sh and kobodash check this
+[ -z "$KD_W" ] && echo $$ >/run/kobodash.pid # OpenRC's, so 'rc-service kobodash stop' finds us after a manual restart
+pid=""
+cpid=""
+# stopped (OpenRC, deploy.sh): take kobodash and a rescue connect down too, or they live on
+trap '[ -n "$pid" ] && kill "$pid" 2>/dev/null; [ -n "$cpid" ] && kill -9 -"$cpid" 2>/dev/null; exit 0' TERM INT
 if [ -z "$KD_W" ]; then
 	mkdir -p /tmp/p3
 	grep -q " /tmp/p3 " /proc/mounts || mount -t ext4 /dev/mmcblk0p3 /tmp/p3
@@ -124,7 +130,7 @@ reboots_kept() {
 		[ -f /tmp/kobodash.budget ] || budget_ok=0 # unreadable: unknown, so no reboot
 	fi
 	for t in $(cat /tmp/kobodash.budget 2>/dev/null); do
-		case $t in '' | *[!0-9]*) continue ;; esac
+		case $t in '' | *[!0-9]* | 0*) continue ;; esac # 0-led is octal to ash: "08" would kill us
 		d=$((now - t))
 		[ $d -lt 86400 ] && [ $d -gt -86400 ] && echo "$t"
 	done
@@ -135,7 +141,10 @@ rescue() { # rescue REASON PID
 	# SIGKILL, never TERM: kobodash's TERM handler takes the start back off its update trial,
 	# and a release that keeps needing rescue must use the trial up. Never "kill 0" (our group).
 	[ "${2:-0}" -gt 1 ] && kill -9 "$2" 2>/dev/null
-	killall -9 fbink connect_to_network.sh udhcpc wpa_supplicant 2>/dev/null
+	# kobodash's Wi-Fi work lives on without it (own process group): its wrapper shell
+	# (matched by its command line), the scripts, a module load or unload, the daemons
+	pkill -9 -f connect_to_network 2>/dev/null
+	killall -9 fbink toggle.sh prepare_changing_wifi.sh connect_to_network.sh wlarm_le insmod rmmod udhcpc wpa_supplicant 2>/dev/null
 	bounded 40 "$WIFI/toggle.sh" off
 	rm -f /run/connect_to_network.sh.pid
 	bounded 40 "$WIFI/toggle.sh" on
@@ -158,6 +167,7 @@ rescue() { # rescue REASON PID
 		sleep "$TICK"
 		held=$((held + TICK))
 		if ! routed && [ $((held % 300)) -lt "$TICK" ]; then # lost it again: one fresh try every 5 min
+			bounded 40 "$WIFI/toggle.sh" on # a failed connect switched it off (InkBox does that)
 			connect_start
 		fi
 	done
@@ -202,6 +212,10 @@ guard() {
 			nonet=0
 		fi
 		prev=$now
+		if [ "$(wc -c <"$LOG" 2>/dev/null || echo 0)" -gt 2097152 ]; then # tmpfs is RAM: a runaway logger mustn't fill it
+			tail -c 262144 "$LOG" >"$LOG.old" 2>/dev/null
+			: >"$LOG"
+		fi
 		b=$(cat "$BEAT" 2>/dev/null)
 		if [ "$b" = "$last" ]; then same=$((same + TICK)); else same=0; last=$b; [ -n "$b" ] && moved=1 beats_seen=1; fi
 		t=$(touches)
@@ -250,11 +264,15 @@ while :; do
 		mv "$W/kobodash.prev" "$W/kobodash"
 	fi
 	if [ $ran -lt 60 ]; then fails=$((fails + 1)); else fails=0; fi
-	case $fails in
-	0 | 1) delay=3 ;;
-	2) delay=10 ;;
-	3) delay=30 ;;
-	*) delay=60 ;;
-	esac
-	sleep $delay
+	if [ $fails -ge 5 ]; then # dies again and again with nothing to roll back to: be reachable
+		rescue "kobodash $fails kez ust uste coktu (cikis $rc)" ""
+		fails=0
+	fi
+	set -- $BACKOFF
+	i=1
+	while [ $i -lt $fails ] && [ $# -gt 1 ]; do
+		shift
+		i=$((i + 1))
+	done
+	sleep "$1"
 done

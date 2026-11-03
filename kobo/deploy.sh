@@ -30,8 +30,11 @@ ssh root@"$IP" "set -e
 	install -m 600 /tmp/dash.conf.new $WL/opt/kobodash/dash.conf
 	install -m 755 /tmp/ipd.new $WL/etc/init.d/ipd   # kobodash owns sleep + power button
 	install -m 755 /tmp/kobodash.rc $WL/etc/init.d/kobodash
-	install -m 755 /tmp/run.sh.new $WL/opt/kobodash/run.sh
-	install -m 755 /tmp/supervise.sh.new $WL/opt/kobodash/supervise.sh
+	sh -n /tmp/run.sh.new && sh -n /tmp/supervise.sh.new   # a broken boot script would strand the device
+	# copy next to the target, then rename: never a half-written script, and a running
+	# supervise.sh keeps reading its old copy
+	install -m 755 /tmp/run.sh.new $WL/opt/kobodash/run.sh.tmp && mv $WL/opt/kobodash/run.sh.tmp $WL/opt/kobodash/run.sh
+	install -m 755 /tmp/supervise.sh.new $WL/opt/kobodash/supervise.sh.tmp && mv $WL/opt/kobodash/supervise.sh.tmp $WL/opt/kobodash/supervise.sh
 	rm -f $WL/opt/kobodash/kobodash.prev   # a hand deploy is trusted; never roll back to an older build
 	killall -9 ipd 2>/dev/null || true
 	rm -f /tmp/kobodash.new /tmp/dash.conf.new /tmp/ipd.new /tmp/kobodash.rc /tmp/run.sh.new /tmp/supervise.sh.new

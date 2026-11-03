@@ -120,8 +120,8 @@ The binary updates itself; `run.sh` and `supervise.sh` don't. To move a device t
 image/test-supervise.sh                                   # must say 0 failed
 scp image/overlay/opt/kobodash/supervise.sh $DEV:/tmp/supervise.sh.new
 scp image/overlay/opt/kobodash/run.sh $DEV:/tmp/run.sh.new
-ssh $DEV 'W=/tmp/p3/rootfs/write/opt/kobodash
-  sh -n /tmp/supervise.sh.new && sh -n /tmp/run.sh.new || exit 1
+ssh $DEV 'set -e; W=/tmp/p3/rootfs/write/opt/kobodash
+  sh -n /tmp/supervise.sh.new; sh -n /tmp/run.sh.new
   cp -p $W/supervise.sh $W/supervise.sh.bak; cp -p $W/run.sh $W/run.sh.bak
   chmod 755 /tmp/*.new
   cp /tmp/supervise.sh.new $W/supervise.sh.tmp && mv $W/supervise.sh.tmp $W/supervise.sh
@@ -129,7 +129,7 @@ ssh $DEV 'W=/tmp/p3/rootfs/write/opt/kobodash
   echo installed'
 ```
 
-`mv` replaces the file whole, so a supervise.sh that is running keeps reading its old copy. The new one takes over when supervise restarts:
+`set -e` stops at the first failure, before anything is replaced. `mv` replaces the file whole, so a supervise.sh that is running keeps reading its old copy. The new one takes over when supervise restarts (it writes OpenRC's pid file too, so `rc-service kobodash stop` still finds it):
 
 ```bash
 ssh $DEV 'kill $(cat /run/kobodash-supervise.pid); killall kobodash; sleep 2

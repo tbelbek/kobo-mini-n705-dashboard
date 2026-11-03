@@ -97,5 +97,14 @@ extract $P3_START /work/v3.img $P3_LEN
 debugfs -c -R "ls -l $W/etc/init.d" /work/v3.img 2>/dev/null
 debugfs -c -R "ls -l $W/etc/runlevels/default" /work/v3.img 2>/dev/null
 debugfs -c -R "ls -l $W/opt/kobodash" /work/v3.img 2>/dev/null
+# debugfs doesn't fail on a write that didn't happen (a full partition): read each file back
+bad=0
+cd /work/overlay
+for f in $(find . -type f | sed 's#^\./##'); do
+	debugfs -c -R "dump $W/$f /work/chk" /work/v3.img >/dev/null 2>&1
+	if ! cmp -s "$f" /work/chk; then echo "MISSING OR DIFFERENT in image: $f"; bad=1; fi
+	rm -f /work/chk
+done
+[ $bad -eq 0 ] && echo "overlay files: all verified" || { echo "overlay verification FAILED"; exit 1; }
 EOF
 echo "== done: $OUT"

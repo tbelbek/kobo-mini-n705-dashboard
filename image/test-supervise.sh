@@ -62,7 +62,7 @@ run() {
 	if [ "${3:-}" = wifi_works ]; then touch "$T/wifi_works"; else rm -f "$T/wifi_works"; fi
 	PATH=$T/bin:$PATH KD_KCONF=$T/kconf KD_W=$T/w KD_BEAT=$T/beat KD_LOG=$T/log KD_ROUTE=$T/route \
 		KD_IRQ=$T/irq KD_WIFI=$T/wifi KD_CONF=$T/conf KD_PIDFILE=$T/pid KD_REBOOT=$T/bin/reboot KD_SSHD=true \
-		KD_TICK=1 KD_NONET=6 KD_STALE=6 KD_HOLD=3 sh "$SV" 2>/dev/null &
+		KD_TICK=1 KD_NONET=6 KD_STALE=6 KD_HOLD=3 KD_BACKOFF="1 1 1 1" sh "$SV" 2>/dev/null &
 	sv=$!
 	[ -n "${4:-}" ] && { sleep "$4"; echo hang >"$T/mode"; }
 	sleep $(($2 - ${4:-0}))
@@ -106,6 +106,10 @@ use fake; printf 'abc\n12x\n\n' >"$T/w/watchdog-reboots"; run healthy 26 wifi_wo
 check "garbage in the budget: still works" rebooted
 use fake; (sleep 3; echo crash >"$T/mode"; sleep 2; echo hang >"$T/mode") & run healthy 24 wifi_works; wait
 check "hang before the first beat after a run that beat: rescue" rescued
+use fake; run crash 14 wifi_works
+check "crash loop with nothing to roll back to: rescue" grep -q "ust uste coktu" "$T/log"
+use fake; printf '08\n09\n' >"$T/w/watchdog-reboots"; run healthy 26 wifi_works 4
+check "octal-looking budget entries: guard survives" grep -q "rescue: over" "$T/log"
 use fake; cp "$T/kobodash.old" "$T/w/kobodash.prev"; run crash 8
 check "crash at start with .prev: rolled back" grep -q "rolling back" "$T/log"
 rm -f "$T/w/kobodash" "$T/w/kobodash.prev"; run healthy 9 wifi_works

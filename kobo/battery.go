@@ -28,6 +28,14 @@ func battRead() (pct int, charging, ok bool) {
 	return pct, strings.Contains(string(st), "Charging"), err == nil
 }
 
+// onCharger: a charger is plugged in, charging or already full ("Not charging"). Sleeping
+// saves nothing then, and staying up keeps Wi-Fi and ssh reachable.
+func onCharger() bool {
+	st, err := os.ReadFile(battDir + "status")
+	s := strings.TrimSpace(string(st))
+	return err == nil && (s == "Charging" || s == "Not charging" || s == "Full")
+}
+
 // battCritical: the readings say the cell is really empty. lastGood is the last reading
 // above 0 seen before.
 func battCritical(readings []int, charging bool, lastGood int) bool {

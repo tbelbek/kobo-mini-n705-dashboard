@@ -1130,6 +1130,9 @@ func main() {
 			due := !time.Now().Before(a.nextSlot(a.updated))
 			retry := a.wErr != nil && time.Since(lastTry) >= time.Minute
 			if due || retry {
+				if due && onCharger() {
+					log.Printf("slot: on the charger, awake %s", battery()) // the report counts it as a timed wake
+				}
 				lastTry = time.Now()
 				a.refresh()
 				a.show()
@@ -1144,7 +1147,7 @@ func main() {
 				log.Printf("wifi: pinned for %v with nobody around, unpinning", pinLease)
 			}
 			holdAwakeExpire()
-			if !cfg.WifiAlways && !a.wifiPinned && online() && time.Since(lastTouch) > wifiIdle && !a.sshHold() && !holdAwake.Load() {
+			if !cfg.WifiAlways && !a.wifiPinned && !onCharger() && online() && time.Since(lastTouch) > wifiIdle && !a.sshHold() && !holdAwake.Load() {
 				wifiOffOnPurpose.Store(true) // awake without Wi-Fi by design: supervise.sh must not call it lost
 				wifiDown()
 			}
@@ -1153,10 +1156,11 @@ func main() {
 			}
 		}
 
-		// Power model: asleep unless someone is using it. Never while ssh'd in or Wi-Fi is pinned.
+		// Power model: asleep unless someone is using it or it is on the charger (a power-button
+		// press still puts it down). Never while ssh'd in or Wi-Fi is pinned.
 		// A loop, not an if: after a timed wake it goes straight back down instead of
 		// idling with Wi-Fi up until the next 10 s tick.
-		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !a.sshHold() && !holdAwake.Load() {
+		for cfg.Sleep && (sleepNow || (time.Since(lastTouch) > awakeIdle && !onCharger())) && !a.wifiPinned && !a.sshHold() && !holdAwake.Load() {
 			sleepNow = false
 			woke := a.sleepUntil(a.nextSlot(a.updated))
 			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu", "usb": "şarj kablosu"}[woke]

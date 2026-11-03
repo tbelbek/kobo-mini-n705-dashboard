@@ -60,6 +60,8 @@ func dailyReport(text string, now time.Time, expected int) string {
 					night, nightFrom, nightTo = d, lastSleepPct, pct // the longest sleep: the night
 				}
 			}
+		case strings.HasPrefix(msg, "slot: on the charger"):
+			timer++ // a slot refreshed awake: as good as the timed wake it replaced
 		case strings.HasPrefix(msg, "sleep: alarm in"):
 			lastSleepPct = pct
 		case strings.HasPrefix(msg, "wifi: no address"):

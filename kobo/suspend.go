@@ -62,6 +62,8 @@ func setWakeAlarm(d time.Duration) (time.Time, error) {
 	if err := ioctl(f.Fd(), rtcWkalmRd, back); err != nil {
 		return time.Time{}, fmt.Errorf("RTC_WKALM_RD: %w", err)
 	}
+	// only "enabled" can be checked: the Mini's MSP430 driver takes the alarm as seconds
+	// from now and reads it back as 1970-01-01 00:00:01, so the time read back means nothing
 	if back[0] == 0 {
 		return decodeRTC(back[4:]), fmt.Errorf("alarm not enabled after set")
 	}

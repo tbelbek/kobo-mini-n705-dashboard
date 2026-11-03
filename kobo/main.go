@@ -238,9 +238,10 @@ type App struct {
 	nextWake    time.Time
 	warnings    []Warning
 	calUpdated  time.Time
-	forceCal    bool      // refresh button: fetch calendars too, not just weather
-	wantUpdate  bool      // refresh button: also check for a new release right away
-	wifiPinned  bool      // switched on by hand: stays up until tapped again
+	forceCal    bool // refresh button: fetch calendars too, not just weather
+	wantUpdate  bool // refresh button: also check for a new release right away
+	wifiPinned  bool // switched on by hand: stays up until tapped again, or pinLease
+	pinnedAt    time.Time
 	skipWake    bool      // this tap switched Wi-Fi off; don't let it wake the radio again
 	shownOnline bool      // Wi-Fi state in the last drawn frame
 	sleeping    bool      // drawing the frame that stays up while asleep: Wi-Fi shown off
@@ -264,18 +265,21 @@ func (a *App) atHome() bool {
 func (a *App) toggleWifi() {
 	if a.wifiPinned || online() {
 		a.wifiPinned, a.skipWake = false, true
+		wifiOffOnPurpose.Store(true)
 		wifiDown()
 	} else {
-		a.wifiPinned = true
+		a.wifiPinned, a.pinnedAt = true, time.Now()
 		reconnectWifi()
 	}
 }
 
 // onDevice: InkBox's Wi-Fi scripts exist only on the Kobo (desk renders skip the radio dance).
-func onDevice() bool {
+func onDevice() bool { return isDevice() }
+
+var isDevice = sync.OnceValue(func() bool { // asked on every beat: look once
 	_, err := os.Stat("/usr/local/bin/wifi/toggle.sh")
 	return err == nil
-}
+})
 
 func (a *App) refresh() {
 	t0 := time.Now()
@@ -283,7 +287,12 @@ func (a *App) refresh() {
 		a.wErr = fmt.Errorf("Wi-Fi bağlanamadı")
 		log.Printf("wifi: no address after 90s %s", battery())
 		a.updated = time.Now().Round(0) // wall clock only: monotonic time stops while suspended
+		noteNetwork(false)
 		return
+	}
+	noteNetwork(true)
+	if sleptOK.Load() { // slept, woke, reached the network: the release works
+		trialPassed()
 	}
 	beat()
 	wifi := time.Since(t0)
@@ -406,24 +415,44 @@ func stateFile(name string) string {
 // reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background, like run.sh does at boot:
 // connect even when toggle.sh on reports a failure (its status is wlarm_le up's). They refuse
 // to run twice, so overlapping calls are harmless.
+// Wi-Fi operations one at a time. The connect script runs in its own process group so a
+// stale one can be killed whole: left alone it waits up to 320 s for DHCP and then runs
+// toggle.sh off, which would cut down a later, working connection.
+var (
+	wifiMu      sync.Mutex
+	connPgid    int
+	connStarted time.Time
+)
+
+// killConnect ends a connect still running (wifiMu held).
+func killConnect() {
+	if connPgid > 0 {
+		syscall.Kill(-connPgid, syscall.SIGKILL)
+		connPgid = 0
+	}
+}
+
 func reconnectWifi() {
+	wifiMu.Lock()
+	busy := connPgid > 0 && syscall.Kill(-connPgid, 0) == nil && time.Since(connStarted) < 100*time.Second
+	wifiMu.Unlock()
+	if busy {
+		return // one is already on its way
+	}
 	t0 := time.Now()
+	wifiOffOnPurpose.Store(false)
 	// trap '' PIPE: inherited by every child, so if this process dies (update, crash) while the
 	// backgrounded udhcpc still holds the log pipe, its scripts get EPIPE instead of being killed.
 	cmd := exec.Command("sh", "-c", `trap '' PIPE; . /opt/kobodash/kobodash.conf; /usr/local/bin/wifi/toggle.sh on; echo "toggle on: $?"; `+
 		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"; echo "connect: $?"`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// the scripts' output goes to the card: when a wake gets no address, this is the only trace
-	wl := stateFile("wifi.log")
-	if st, err := os.Stat(wl); err == nil && st.Size() > 256<<10 {
-		os.Rename(wl, wl+".old")
-	}
-	f, _ := os.OpenFile(wl, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f := openWifiLog(t0) // card I/O, bounded and kept out of wifiMu: a stuck card must not block Wi-Fi recovery
 	// Each line is stamped with seconds since t0, to show which step (module, scan, DHCP)
 	// the time goes to. Our own pipe, read to EOF: udhcpc forks into the background with
 	// this stdout, and closing the read end under it would kill it with SIGPIPE.
 	var pr, pw *os.File
 	if f != nil {
-		fmt.Fprintf(f, "== %s connect\n", time.Now().UTC().Format("2006-01-02 15:04:05"))
 		var err error
 		if pr, pw, err = os.Pipe(); err == nil {
 			cmd.Stdout, cmd.Stderr = pw, pw
@@ -431,7 +460,13 @@ func reconnectWifi() {
 			cmd.Stdout, cmd.Stderr = f, f
 		}
 	}
+	wifiMu.Lock()
+	killConnect()
 	err := cmd.Start()
+	if err == nil {
+		connPgid, connStarted = cmd.Process.Pid, t0
+	}
+	wifiMu.Unlock()
 	if pw != nil {
 		pw.Close() // the children hold their own copies
 	}
@@ -454,10 +489,41 @@ func reconnectWifi() {
 			f.Close()
 		}
 	}()
+	pgid := cmd.Process.Pid
 	go func() {
 		err := cmd.Wait() // exit 255 = connect_to_network.sh thinks another copy is running
+		wifiMu.Lock()
+		if connPgid == pgid { // gone: its number may be handed to someone else
+			connPgid = 0
+		}
+		wifiMu.Unlock()
 		log.Printf("wifi: connect script done after %v: %v", time.Since(t0).Round(100*time.Millisecond), err)
 	}()
+}
+
+// openWifiLog rotates wifi.log, opens it and writes the connect header, all of it given up
+// after 5 s (nil: connect without a log).
+func openWifiLog(t0 time.Time) *os.File {
+	done := make(chan *os.File, 1)
+	go func() {
+		wl := stateFile("wifi.log")
+		if st, err := os.Stat(wl); err == nil && st.Size() > 256<<10 {
+			os.Rename(wl, wl+".old")
+		}
+		f, err := os.OpenFile(wl, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			done <- nil
+			return
+		}
+		fmt.Fprintf(f, "== %s connect\n", t0.UTC().Format("2006-01-02 15:04:05"))
+		done <- f
+	}()
+	select {
+	case f := <-done:
+		return f
+	case <-time.After(5 * time.Second):
+		return nil
+	}
 }
 
 // stamped prefixes every line written through it with the seconds since t0. It never reports
@@ -493,6 +559,7 @@ func wifiUp(timeout time.Duration) bool {
 	if routed() {
 		return true
 	}
+	cleanWifi()
 	reconnectWifi()
 	for end := time.Now().Add(timeout); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
 		if routed() {
@@ -521,9 +588,21 @@ func hasDefaultRoute(table string) bool {
 // Bounded: on 2 Nov a v0.7.11 process logged nothing after its first refresh and
 // never reached "sleep:" for 5 hours; toggle.sh off is the blocking call on that path.
 func wifiDown() {
-	if _, err := runBounded(30*time.Second, "/usr/local/bin/wifi/toggle.sh", "off"); err != nil {
+	if wifiOff() == errLeftBehind {
+		noteLeftBehind("toggle.sh") // after wifiMu is released: healing takes it again
+	}
+}
+
+// wifiOff switches the radio off; the watchdog calls it directly (no escalation from inside).
+func wifiOff() error {
+	wifiMu.Lock()
+	defer wifiMu.Unlock()
+	killConnect()
+	_, err := runBounded(30*time.Second, "/usr/local/bin/wifi/toggle.sh", "off")
+	if err != nil {
 		log.Printf("wifi off: %v", err)
 	}
+	return err
 }
 
 // runBounded runs a command but gives up waiting after d. A process stuck in the kernel
@@ -545,8 +624,8 @@ func runBounded(d time.Duration, name string, args ...string) ([]byte, error) {
 		return out.Bytes(), err
 	case <-time.After(d):
 		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		noteLeftBehind(filepath.Base(name)) // several of these is trouble the watchdog handles
-		return nil, fmt.Errorf("%s: no exit after %v, killed", filepath.Base(name), d)
+		log.Printf("%s: no exit after %v, killed", filepath.Base(name), d)
+		return nil, errLeftBehind // callers report it with noteLeftBehind once their locks are free
 	}
 }
 
@@ -611,6 +690,9 @@ func (a *App) show() {
 	}
 	// -f: full flashing refresh, clears ghosting on every page change
 	if out, err := runBounded(30*time.Second, a.cfg.Fbink, "-q", "-f", "-g", "file="+framePath); err != nil {
+		if err == errLeftBehind {
+			noteLeftBehind("fbink")
+		}
 		log.Printf("fbink: %v %s", err, out)
 		return
 	}
@@ -690,6 +772,7 @@ func main() {
 	genkey := flag.String("genkey", "", "release tooling: write a new ed25519 private key here, print the public key")
 	sign := flag.String("sign", "", "release tooling: sign the file given as argument with this private key")
 	showVersion := flag.Bool("version", false, "print version")
+	notify := flag.String("notify", "", "send this text to the Telegram alert chat and exit (supervise.sh's rescue mode uses it)")
 	wdTest := flag.Bool("watchdogtest", false, "on the device: start, then hang the main loop; the watchdog must reboot within ~3 min")
 	flag.Parse()
 
@@ -720,6 +803,12 @@ func main() {
 		loc = time.UTC
 	}
 	a := &App{cfg: cfg, loc: loc, cal: Calendar{Feeds: cfg.Feeds, Holiday: cfg.Holiday}, place: cfg.Place, region: cfg.WarnRegion, wokeBy: "açılış"}
+	if *notify != "" {
+		if !a.telegram(cfg.TgThread, *notify, false) {
+			os.Exit(1)
+		}
+		return
+	}
 	a.loadLocation()
 	a.home()
 
@@ -856,7 +945,13 @@ func main() {
 				lastBeat = time.Now()
 				log.Printf("awake: idle %v, ssh %v, pinned %v, online %v %s", time.Since(lastTouch).Round(time.Second), sshActive(), a.wifiPinned, online(), battery())
 			}
+			if a.wifiPinned && time.Since(a.pinnedAt) > pinLease && time.Since(lastTouch) > pinLease && !sshActive() {
+				a.wifiPinned = false // forgotten on: a pinned radio would keep it awake until the battery is flat
+				log.Printf("wifi: pinned for %v with nobody around, unpinning", pinLease)
+			}
+			holdAwakeExpire()
 			if !cfg.WifiAlways && !a.wifiPinned && online() && time.Since(lastTouch) > wifiIdle && !sshActive() && !holdAwake.Load() {
+				wifiOffOnPurpose.Store(true) // awake without Wi-Fi by design: supervise.sh must not call it lost
 				wifiDown()
 			}
 			if online() != a.shownOnline {
@@ -870,16 +965,17 @@ func main() {
 		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() && !holdAwake.Load() {
 			sleepNow = false
 			woke := a.sleepUntil(a.nextSlot(a.updated))
-			if woke != "error" {
-				trialPassed()
-			}
 			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu"}[woke]
 			resumed = time.Now()
 			if woke == "timer" {
 				lastTry = time.Now()
 				a.refresh()
 				maybeUpdate()
-				a.show() // lastTouch stays old, so it goes straight back to sleep
+				if sshActive() || a.wifiPinned || holdAwake.Load() {
+					a.show() // it won't go straight back down, so show the new data now
+				}
+				// no frame here: sleepUntil draws the one that stays up, and an e-ink flash
+				// per wake costs panel power (lastTouch stays old, so it goes straight back down)
 			} else {
 				lastTouch = time.Now() // power button (or a failed sleep): stay up for a while
 				a.show()
@@ -963,6 +1059,12 @@ func (a *App) sleepUntil(due time.Time) string {
 	if d < 30*time.Second {
 		d = 30 * time.Second
 	}
+	if d > maxSleep { // a clock that jumped can't make it sleep for a day
+		log.Printf("sleep: %v asked, capped at %v", d.Round(time.Second), maxSleep)
+		d = maxSleep
+	}
+	due = time.Now().Round(0).Add(d) // what the alarm is really set for: wake classification and the screen use it
+	a.nextWake = due
 	if _, err := setWakeAlarm(d); err != nil {
 		log.Printf("alarm: %v", err) // never suspend without a way back
 		awakeAfterFailedSleep()
@@ -979,6 +1081,7 @@ func (a *App) sleepUntil(due time.Time) string {
 		return "error"
 	}
 	noteSuspend(true)
+	sleptOK.Store(true)
 	woke := "button"
 	if time.Now().Round(0).After(due.Add(-45 * time.Second)) {
 		woke = "timer"
@@ -986,6 +1089,9 @@ func (a *App) sleepUntil(due time.Time) string {
 	log.Printf("woke: %s after %v %s", woke, time.Now().Round(0).Sub(start).Round(time.Second), battery())
 	return woke
 }
+
+// maxSleep: the longest single sleep. Quiet hours 23-06 plus the slot after need 9 h.
+const maxSleep = 10 * time.Hour
 
 // awakeAfterFailedSleep: staying awake after all, so be reachable (Wi-Fi back on) and
 // let the watchdog count it.

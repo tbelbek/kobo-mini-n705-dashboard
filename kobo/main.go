@@ -1163,6 +1163,10 @@ func main() {
 				lastTouch = time.Time{}
 				continue
 			}
+			if woke == "error" { // the sleep failed, nobody pressed anything: try again in failRetry
+				lastTouch = time.Now().Add(failRetry - awakeIdle)
+				continue
+			}
 			if woke == "timer" {
 				// lastTouch from before the sleep still looks recent (monotonic time stopped while
 				// asleep): forget it, or a tap just before a press-to-sleep keeps this wake up 2 min
@@ -1452,9 +1456,16 @@ const maxSleep = 10 * time.Hour
 
 // awakeAfterFailedSleep: staying awake after all, so be reachable (Wi-Fi back on) and
 // let the watchdog count it.
+// failRetry: how soon a failed sleep is tried again. Wi-Fi comes back only once it has failed
+// failWifiAfter times in a row: a one-off busy kernel shouldn't cost a Wi-Fi cycle, a stuck
+// one should leave the device reachable. The watchdog's ladder takes over at watchdogFails.
+const failRetry, failWifiAfter = 20 * time.Second, 3
+
 func awakeAfterFailedSleep() {
-	reconnectWifi()
 	noteSuspend(false)
+	if suspendFails.Load() >= failWifiAfter { // back to 0 when the ladder ran: it turns Wi-Fi on itself
+		reconnectWifi()
+	}
 }
 
 // kernelLog appends the kernel log's last 300 lines to suspend-fail.log on the card (kept small).

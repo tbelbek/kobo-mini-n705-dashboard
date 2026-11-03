@@ -30,7 +30,7 @@ import (
 
 const (
 	watchdogStuck    = 10 * time.Minute // awake without the main loop moving (a refresh takes ~3 min at most)
-	watchdogFails    = 6                // suspend failures in a row (~15 min awake in normal config)
+	watchdogFails    = 6                // suspend failures in a row (a few minutes: failRetry apart)
 	watchdogLeft     = 3                // helpers left behind stuck since the last good sleep
 	watchdogMax      = 3                // reboots per 24 h
 	watchdogInterval = time.Minute

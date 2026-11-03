@@ -215,6 +215,10 @@ func TestICSRecurrence(t *testing.T) {
 			"2026-11-01", "2026-12-31", []string{"11-27 17:00", "12-25 17:00"}},
 		{"Monday in the first week (BYDAY with BYMONTHDAY)", ev("DTSTART;TZID=Europe/Stockholm:20261102T090000\nRRULE:FREQ=MONTHLY;BYDAY=MO;BYMONTHDAY=1,2,3,4,5,6,7;COUNT=3\nSUMMARY:x"),
 			"2026-11-01", "2027-02-28", []string{"11-02 09:00", "12-07 09:00", "01-04 09:00"}},
+		{"every weekday (DAILY;BYDAY)", ev("DTSTART;TZID=Europe/Stockholm:20261106T080000\nRRULE:FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR\nSUMMARY:x"),
+			"2026-11-06", "2026-11-10", []string{"11-06 08:00", "11-09 08:00", "11-10 08:00"}},
+		{"absurd nth weekday doesn't crash", ev("DTSTART;TZID=Europe/Stockholm:20261102T090000\nRRULE:FREQ=MONTHLY;BYDAY=-2147483648MO\nSUMMARY:x"),
+			"2026-11-01", "2026-12-31", nil},
 		{"31st skips short months", ev("DTSTART;VALUE=DATE:20270131\nRRULE:FREQ=MONTHLY\nSUMMARY:x"),
 			"2027-01-01", "2027-05-31", []string{"01-31 00:00", "03-31 00:00", "05-31 00:00"}},
 		{"UTC start keeps UTC across DST", ev("DTSTART:20260901T080000Z\nRRULE:FREQ=WEEKLY\nSUMMARY:x"),
@@ -261,5 +265,32 @@ func TestEventsMemo(t *testing.T) {
 	c.Refresh()
 	if e := c.Events(lo, hi, loc); len(e) != 1 || e[0].Start.Day() != 7 {
 		t.Fatalf("changed feed not picked up: %v", e)
+	}
+}
+
+// Any wind angle maps to a direction, negative and huge ones too (SMHI data is not ours to trust).
+func TestCompass(t *testing.T) {
+	for deg, want := range map[float64]string{0: "K", 90: "D", 359: "K", -90: "B", -400: "KB", 720: "K", 1e9: "B"} { // 1e9 mod 360 = 280
+		if got := compass(deg); got != want {
+			t.Errorf("compass(%v) = %s, want %s", deg, got, want)
+		}
+	}
+}
+
+// A feed that answers 200 with something that isn't a calendar keeps the last good copy.
+func TestRefreshKeepsGoodFeed(t *testing.T) {
+	f := t.TempDir() + "/a.ics"
+	good := "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
+	os.WriteFile(f, []byte(good), 0o644)
+	c := Calendar{Feeds: []string{"file://" + f}}
+	if err := c.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(f, []byte("<html>please log in</html>"), 0o644)
+	if err := c.Refresh(); err == nil {
+		t.Error("a login page was accepted as a calendar")
+	}
+	if c.raw["file://"+f] != good {
+		t.Error("the good copy was replaced")
 	}
 }

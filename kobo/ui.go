@@ -266,7 +266,8 @@ func (a *App) drawStatus(img *image.Gray, x, y int) int {
 	if a.cfg.Sleep && next.After(clock()) {
 		x = text(img, x, y, " · sonraki "+next.In(a.loc).Format("15:04"), f, black)
 	}
-	if a.wErr != nil { // the last refresh failed: these numbers are old
+	calStale := len(a.cfg.Feeds) > 0 && clock().Sub(a.calUpdated) > 26*time.Hour // calendars are fetched every 4 h
+	if a.wErr != nil || calStale {                                               // the last refresh failed: these numbers are old
 		icon(img, "refresh-off", x+8, y-16, 20)
 		x += 28
 	}

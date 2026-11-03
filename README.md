@@ -33,7 +33,8 @@ The device is asleep most of the time and the last frame stays on the panel (e-i
 - The **power button** wakes it for `AWAKE_SEC` (120) of touch use. Pressing it while awake puts it to sleep.
 - Touch can't wake the Mini from suspend: only the keypad and USB are wakeup sources.
 - While awake the CPU uses the `conservative` governor (InkBox pins it at 800 MHz) and Wi-Fi is off unless needed.
-- It never suspends while an ssh session is open or Wi-Fi is pinned on.
+- It doesn't suspend while an ssh session is open (3 hours at most: a connection whose other end vanished can look open for hours) or Wi-Fi is pinned on (30 minutes unused at most).
+- A power-button press while it is going to sleep keeps it awake. A struck-through refresh icon means the weather is stale, or the calendars are more than a day old.
 - **Wi-Fi:** each wake runs InkBox's own `connect_to_network.sh` and counts the network as up only once the default route exists (udhcpc sets the address a moment earlier, and fetches in between fail with "network is unreachable"). Anything an earlier wake left behind (a connect still running, the driver still loaded, a stale pid file) is cleared first. `wifi: up in …` in the log shows the time per wake, and `wifi.log` on the card has every line of the scripts stamped with seconds since the connect started. (A faster hand-rolled `wpa_supplicant` path was tried in v0.7.8–v0.7.18 and removed: once it actually ran, timed wakes stopped getting Wi-Fi.)
 - Going to sleep, it draws the frame first and switches Wi-Fi off last, so a step that hangs on the way down leaves it reachable. One full e-ink refresh per timed wake.
 - **Low-battery alert** (optional): set `TELEGRAM_TOKEN` (a bot from @BotFather) and `TELEGRAM_CHAT` (plus `TELEGRAM_THREAD` for a forum topic) and it sends one Telegram message when the battery drops to `BATT_ALERT` (20%), and one more at half of that. It rearms once the battery is back above `BATT_ALERT`+10.

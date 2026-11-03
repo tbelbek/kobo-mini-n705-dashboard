@@ -13,11 +13,34 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	_ "time/tzdata" // the Kobo has no reliable zoneinfo; embed it
 )
 
-var httpClient = &http.Client{Timeout: 25 * time.Second}
+var httpClient = &http.Client{Timeout: 25 * time.Second, Transport: answered{http.DefaultTransport}}
+
+// answered notes that some server replied (any status): the network works, whatever SMHI
+// or a feed is doing. refresh feeds that, not a route or one service, to the network ladder.
+type answered struct{ http.RoundTripper }
+
+var gotAnswer atomic.Bool
+
+// CloseIdleConnections reaches the real transport (the embedded interface would hide it,
+// and the pre-suspend cleanup would do nothing).
+func (t answered) CloseIdleConnections() {
+	if c, ok := t.RoundTripper.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
+func (t answered) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.RoundTripper.RoundTrip(r)
+	if err == nil {
+		gotAnswer.Store(true)
+	}
+	return resp, err
+}
 
 func get(u string) ([]byte, error) {
 	if p, ok := strings.CutPrefix(u, "file://"); ok { // local feeds: demos, desk tests
@@ -220,7 +243,8 @@ func sunTimes(lat, lon float64, day time.Time) (rise, set time.Time, ok bool) {
 
 // compass: 8-point Turkish wind direction the wind comes FROM (K=kuzey, D=doğu, G=güney, B=batı).
 func compass(deg float64) string {
-	return []string{"K", "KD", "D", "GD", "G", "GB", "B", "KB"}[int(math.Mod(deg+22.5+360, 360)/45)]
+	a := math.Mod(math.Mod(deg+22.5, 360)+360, 360) // any angle, negative too
+	return []string{"K", "KD", "D", "GD", "G", "GB", "B", "KB"}[int(a/45)%8]
 }
 
 // ---------------------------------------------------------------- official warnings (SMHI)
@@ -428,7 +452,7 @@ func monthDays(y int, m time.Month, rule map[string]string, base time.Time) []in
 				out = append(out, all...)
 			case n > 0 && n <= len(all):
 				out = append(out, all[n-1])
-			case n < 0 && -n <= len(all):
+			case n < 0 && n >= -len(all): // not -n: -MinInt overflows
 				out = append(out, all[len(all)+n])
 			}
 		}
@@ -488,8 +512,17 @@ func expand(base time.Time, rule map[string]string, lo, hi time.Time, loc *time.
 	skip := 0 // periods wholly before lo; jumped over when nothing is counted
 	switch rule["FREQ"] {
 	case "DAILY":
+		days := map[time.Weekday]bool{} // BYDAY on a daily rule: only those weekdays ("every weekday")
+		for _, v := range strings.Split(rule["BYDAY"], ",") {
+			if wd, ok := weekdays[strings.ToUpper(strings.TrimSpace(v))]; ok {
+				days[wd] = true
+			}
+		}
 		period = func(k int) (time.Time, []time.Time) {
 			d := at(by, bm, bd+k*interval)
+			if len(days) > 0 && !days[d.Weekday()] {
+				return d, nil
+			}
 			return d, []time.Time{d}
 		}
 		skip = daysBetween(midnight(base, loc), lo) / interval
@@ -716,8 +749,7 @@ type Calendar struct {
 	raw     map[string]string
 	// the last Events answer: every frame asks for the same days, and parsing the
 	// feeds again costs CPU time (battery) on each one
-	memoKey string
-	memo    []Event
+	memo map[string][]Event // per day range asked
 }
 
 func (c *Calendar) Refresh() error {
@@ -731,6 +763,9 @@ func (c *Calendar) Refresh() error {
 			continue
 		}
 		b, err := get(u)
+		if err == nil && !strings.Contains(string(b[:min(len(b), 4096)]), "BEGIN:VCALENDAR") {
+			err = fmt.Errorf("%s: not a calendar (%d bytes)", u, len(b)) // a login page or an empty answer must not wipe it
+		}
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -738,7 +773,7 @@ func (c *Calendar) Refresh() error {
 			continue // keep the previous copy of this feed
 		}
 		if c.raw[u] != string(b) {
-			c.raw[u], c.memoKey = string(b), ""
+			c.raw[u], c.memo = string(b), nil
 		}
 	}
 	return firstErr
@@ -746,8 +781,8 @@ func (c *Calendar) Refresh() error {
 
 func (c *Calendar) Events(lo, hi time.Time, loc *time.Location) []Event {
 	key := lo.String() + hi.String() + loc.String()
-	if key == c.memoKey {
-		return c.memo
+	if e, ok := c.memo[key]; ok {
+		return e
 	}
 	var out []Event
 	for u, raw := range c.raw {
@@ -762,6 +797,9 @@ func (c *Calendar) Events(lo, hi time.Time, loc *time.Location) []Event {
 		}
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Start.Before(out[b].Start) })
-	c.memoKey, c.memo = key, out
+	if c.memo == nil || len(c.memo) > 8 { // the screen asks for two ranges; days roll over
+		c.memo = map[string][]Event{}
+	}
+	c.memo[key] = out
 	return out
 }

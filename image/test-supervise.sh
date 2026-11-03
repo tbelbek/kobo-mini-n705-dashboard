@@ -104,6 +104,8 @@ check "unreadable budget (stuck card): no reboot" sh -c 'grep -q "read the reboo
 rm -f "$T/w/watchdog-reboots"
 use fake; printf 'abc\n12x\n\n' >"$T/w/watchdog-reboots"; run healthy 26 wifi_works 4
 check "garbage in the budget: still works" rebooted
+use fake; (sleep 3; echo crash >"$T/mode"; sleep 2; echo hang >"$T/mode") & run healthy 24 wifi_works; wait
+check "hang before the first beat after a run that beat: rescue" rescued
 use fake; cp "$T/kobodash.old" "$T/w/kobodash.prev"; run crash 8
 check "crash at start with .prev: rolled back" grep -q "rolling back" "$T/log"
 rm -f "$T/w/kobodash" "$T/w/kobodash.prev"; run healthy 9 wifi_works

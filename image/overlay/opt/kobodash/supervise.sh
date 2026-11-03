@@ -2,8 +2,9 @@
 # Keeps kobodash running from the unionfs write layer on partition 3, and stands guard over
 # it without relying on it (busybox sh only, so a broken kobodash can't take the guard down):
 #
-# - A self-update exits 0 to load the new binary. A binary that crashes (non-zero exit, not
-#   a signal) within a minute is replaced by the previous one; crashes in a row back off.
+# - A self-update exits 0 to load the new binary. A binary that crashes (non-zero exit, or
+#   a signal other than TERM/INT) within a minute is replaced by the previous one; crashes in a
+#   row back off.
 # - Rescue mode: awake for RESCUE_NONET seconds in a row without a default route, or with
 #   kobodash's heartbeat (/tmp/kobodash.beat) standing still for RESCUE_STALE seconds, means
 #   kobodash can't bring the device back: kill it, bring Wi-Fi and sshd up here, send a
@@ -131,11 +132,9 @@ reboots_kept() {
 
 rescue() { # rescue REASON PID
 	say "RESCUE: $1"
-	if [ "${2:-0}" -gt 1 ]; then # never "kill 0": that is our whole process group
-		kill "$2" 2>/dev/null
-		sleep 3
-		kill -9 "$2" 2>/dev/null
-	fi
+	# SIGKILL, never TERM: kobodash's TERM handler takes the start back off its update trial,
+	# and a release that keeps needing rescue must use the trial up. Never "kill 0" (our group).
+	[ "${2:-0}" -gt 1 ] && kill -9 "$2" 2>/dev/null
 	killall -9 fbink connect_to_network.sh udhcpc wpa_supplicant 2>/dev/null
 	bounded 40 "$WIFI/toggle.sh" off
 	rm -f /run/connect_to_network.sh.pid
@@ -146,7 +145,7 @@ rescue() { # rescue REASON PID
 		sleep 1
 		i=$((i + 1))
 	done
-	pidof sshd >/dev/null 2>&1 || "$SSHD" >>"$LOG" 2>&1
+	pidof sshd >/dev/null 2>&1 || bounded 20 "$SSHD"
 	ip=$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
 	if routed; then
 		say "rescue: Wi-Fi up (${ip:-no address}), sshd $(pidof sshd >/dev/null 2>&1 && echo running || echo DOWN)"
@@ -188,8 +187,9 @@ rescue() { # rescue REASON PID
 
 # guard PID: returns when PID exits, or after a rescue
 guard() {
-	last=$(cat "$BEAT" 2>/dev/null)
-	moved=0 # a binary that never writes the heartbeat (older releases) is never called stuck
+	last=""
+	moved=$beats_seen # a binary that never writes the heartbeat (older releases) is never called stuck;
+	# once one run has, a later run that hangs before its first beat counts as stuck too
 	same=0
 	nonet=0
 	prev=$(date +%s)
@@ -203,7 +203,7 @@ guard() {
 		fi
 		prev=$now
 		b=$(cat "$BEAT" 2>/dev/null)
-		if [ "$b" = "$last" ]; then same=$((same + TICK)); else same=0; last=$b; moved=1; fi
+		if [ "$b" = "$last" ]; then same=$((same + TICK)); else same=0; last=$b; [ -n "$b" ] && moved=1 beats_seen=1; fi
 		t=$(touches)
 		case $b in *off) off=1 ;; *) off=0 ;; esac # kobodash says the radio is off on purpose
 		if routed || [ "$t" != "$tp" ] || [ $off -eq 1 ]; then nonet=0; else nonet=$((nonet + TICK)); fi
@@ -220,6 +220,7 @@ guard() {
 }
 
 fails=0
+beats_seen=0
 while :; do
 	bin=$W/kobodash
 	[ -x "$bin" ] || bin=$W/kobodash.prev
@@ -229,6 +230,8 @@ while :; do
 		continue
 	fi
 	start=$(date +%s)
+	rm -f "$BEAT" # a fresh run starts with no heartbeat: a hang before its first one shows
+	[ -f "$LOG" ] && [ "$(wc -c <"$LOG")" -gt 1048576 ] && mv -f "$LOG" "$LOG.old" # tmpfs is RAM
 	"$bin" -server "$SERVER" >>"$LOG" 2>&1 </dev/null &
 	pid=$!
 	guard $pid
@@ -240,7 +243,9 @@ while :; do
 		rc=$?
 	fi
 	ran=$(($(date +%s) - start))
-	if [ $rc -ne 0 ] && [ $rc -lt 128 ] && [ $ran -lt 60 ] && [ -x "$W/kobodash.prev" ] && [ "$bin" = "$W/kobodash" ]; then
+	# any failure right after start rolls back, a signal too (SIGILL from a build for the wrong
+	# CPU dies before Go can turn it into an exit code); not TERM/INT, which are someone stopping it
+	if [ $rc -ne 0 ] && [ $rc -ne 143 ] && [ $rc -ne 130 ] && [ $ran -lt 60 ] && [ -x "$W/kobodash.prev" ] && [ "$bin" = "$W/kobodash" ]; then
 		say "kobodash exited $rc right after start: rolling back"
 		mv "$W/kobodash.prev" "$W/kobodash"
 	fi

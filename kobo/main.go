@@ -236,10 +236,13 @@ type App struct {
 	wantUpdate  bool // refresh button: also check for a new release right away
 	wifiPinned  bool // switched on by hand: stays up until tapped again, or pinLease
 	pinnedAt    time.Time
-	skipWake    bool      // this tap switched Wi-Fi off; don't let it wake the radio again
-	shownOnline bool      // Wi-Fi state in the last drawn frame
-	sleeping    bool      // drawing the frame that stays up while asleep: Wi-Fi shown off
-	busy        bool      // refresh button pressed, fetch in progress
+	skipWake    bool          // this tap switched Wi-Fi off; don't let it wake the radio again
+	shownOnline bool          // Wi-Fi state in the last drawn frame
+	sleeping    bool          // drawing the frame that stays up while asleep: Wi-Fi shown off
+	busy        bool          // refresh button pressed, fetch in progress
+	keys        chan struct{} // power-button presses
+	sshSince    time.Time     // first seen the current ssh session (monotonic: awake time)
+	sshExpired  bool
 	weatherAt   time.Time // last successful weather fetch
 
 }
@@ -276,18 +279,21 @@ var onDevice = sync.OnceValue(func() bool {
 
 func (a *App) refresh() {
 	t0 := time.Now()
-	if onDevice() && !wifiUp(90*time.Second) {
+	// a network ladder step (Wi-Fi reset) gets its try now, in this wake: the way down would
+	// switch it off again before it could help
+	if onDevice() && !wifiUp(90*time.Second) && !(noteNetwork(false) && wifiUp(90*time.Second)) {
 		a.wErr = fmt.Errorf("Wi-Fi bağlanamadı")
 		log.Printf("wifi: no address after 90s %s", battery())
 		a.updated = time.Now().Round(0) // wall clock only: monotonic time stops while suspended
-		noteNetwork(false)
 		return
 	}
-	noteNetwork(true)
-	if sleptOK.Load() { // slept, woke, reached the network: the release works
-		trialPassed()
-	}
 	beat()
+	if onDevice() && time.Now().Year() < 2025 { // RTC lost (flat battery): every HTTPS check fails until the clock is right
+		log.Printf("clock at %s: syncing", time.Now().UTC().Format("2006-01-02"))
+		if _, err := runBounded(30*time.Second, "ntpd", "-q", "-n", "-p", "pool.ntp.org"); err == nil {
+			runBounded(10*time.Second, "hwclock", "-w", "-u")
+		}
+	}
 	wifi := time.Since(t0)
 	if onDevice() {
 		log.Printf("wifi: up in %v", wifi.Round(100*time.Millisecond))
@@ -299,7 +305,8 @@ func (a *App) refresh() {
 	var ws []Warning
 	var wErr, warnErr, calErr error
 	cal := a.forceCal || time.Since(a.calUpdated) >= time.Duration(a.cfg.CalRefreshMin)*time.Minute
-	run := func(f func()) { wg.Add(1); go func() { defer wg.Done(); f() }() }
+	gotAnswer.Store(false)
+	run := func(f func()) { wg.Add(1); go func() { defer wg.Done(); defer recoverLog("fetch"); f() }() }
 	run(a.batteryAlert)
 	run(func() { a.wakeReport(wifi) })
 	run(func() { w, wErr = fetchSMHI(a.place, 8) })
@@ -308,6 +315,17 @@ func (a *App) refresh() {
 		run(func() { calErr = a.cal.Refresh() })
 	}
 	wg.Wait()
+	// the network works when something came back over it, not when a route exists
+	// the network works when a server answered (weather, warnings, calendars, Telegram:
+	// any of them), not when a route exists and not when one service is down
+	if fetched := gotAnswer.Load(); onDevice() {
+		if noteNetwork(fetched) { // step 1 just reset Wi-Fi: back up for the rest of this wake
+			wifiUp(90 * time.Second)
+		}
+		if fetched && sleptOK.Load() { // slept, woke, fetched: the release works
+			trialPassed()
+		}
+	}
 	if wErr == nil {
 		a.wDetail, a.wErr = w, nil
 		a.weatherAt = time.Now().Round(0)
@@ -508,6 +526,11 @@ func openWifiLog(t0 time.Time) *os.File {
 		}
 		done <- f
 	}) {
+		go func() { // opened after all, too late: close it
+			if f := <-done; f != nil {
+				f.Close()
+			}
+		}()
 		return nil
 	}
 	return <-done
@@ -516,11 +539,31 @@ func openWifiLog(t0 time.Time) *os.File {
 // cardLog writes the log to the card from its own goroutine. A card that stalls must not
 // stall whoever logs (the main loop, the watchdog): lines that don't fit the queue are
 // dropped, the copy in /tmp (stderr) still has them.
-func cardLog(f *os.File) io.Writer {
+// It also rotates the file (256 KB, one .old): the process can run for weeks.
+func cardLog(path string) io.Writer {
 	q := make(chan []byte, 256)
 	go func() {
+		var f *os.File
+		var size int64
 		for b := range q {
-			f.Write(b)
+			if f == nil || size > 256<<10 {
+				if f != nil {
+					f.Close()
+					os.Rename(path, path+".old")
+				}
+				if st, err := os.Stat(path); err == nil && st.Size() > 256<<10 {
+					os.Rename(path, path+".old")
+				}
+				f, _ = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+				size = 0
+				if st, err := os.Stat(path); err == nil {
+					size = st.Size()
+				}
+			}
+			if f != nil {
+				n, _ := f.Write(b)
+				size += int64(n)
+			}
 			cardPending.Add(-1)
 		}
 	}()
@@ -651,6 +694,30 @@ func runBounded(d time.Duration, name string, args ...string) ([]byte, error) {
 	}
 }
 
+// sshHold: an ssh session keeps it awake, for sshLease of awake time at most. A connection
+// whose other end vanished can stay ESTABLISHED for hours while the address is still there,
+// and would keep the device up until the battery is flat.
+func (a *App) sshHold() bool {
+	if !sshActive() {
+		a.sshSince = time.Time{}
+		return false
+	}
+	if a.sshSince.IsZero() {
+		a.sshSince = time.Now()
+	}
+	if time.Since(a.sshSince) > sshLease {
+		if !a.sshExpired {
+			log.Printf("ssh: open for %v, no longer keeping it awake", sshLease)
+		}
+		a.sshExpired = true
+		return false
+	}
+	a.sshExpired = false
+	return true
+}
+
+const sshLease = 3 * time.Hour
+
 // sshActive: an established connection on local port 22 (0x0016) — never cut it.
 func sshActive() bool {
 	if !online() { // without Wi-Fi a session can't be alive; a dead one can stay ESTABLISHED for hours
@@ -690,6 +757,9 @@ func ensureScaling() {
 const framePath = "/tmp/kobodash.png"
 
 func (a *App) show() {
+	// odd data (a feed, a forecast) that trips the drawing code must not kill the process:
+	// supervise.sh would restart it into the same data, over and over. Keep the old frame.
+	defer recoverLog("show")
 	frame := panelFrame(a.render(), a.cfg.Rotate)
 	if bytes.Equal(frame.Pix, a.shown) {
 		return // a full e-ink flash costs about a second of panel power for nothing
@@ -709,6 +779,13 @@ func (a *App) show() {
 	a.shown = frame.Pix
 }
 
+// recoverLog, deferred, turns a panic into a log line.
+func recoverLog(where string) {
+	if r := recover(); r != nil {
+		log.Printf("%s: panic: %v", where, r)
+	}
+}
+
 func writePNG(path string, img image.Image) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -718,6 +795,15 @@ func writePNG(path string, img image.Image) error {
 	return png.Encode(f, img)
 }
 
+// forever runs an input reader again 30 s after it gives up (a read error, a device that
+// went away), so a glitch doesn't leave the screen deaf until the next restart.
+func forever(f func()) {
+	for {
+		f()
+		time.Sleep(30 * time.Second)
+	}
+}
+
 // readTouch turns zForce events into taps (on finger lift) in screen coordinates.
 func readTouch(c Config, calib bool, taps chan<- image.Point) {
 	f, err := os.Open(c.Input)
@@ -725,6 +811,7 @@ func readTouch(c Config, calib bool, taps chan<- image.Point) {
 		log.Printf("touch: %v", err)
 		return
 	}
+	defer f.Close()
 	const evioCGrab = 0x40044590 // keep InkBox daemons from also acting on our taps
 	syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), evioCGrab, 1)
 	buf := make([]byte, 16) // struct input_event on 32-bit ARM
@@ -842,13 +929,7 @@ func main() {
 	}
 
 	if onDevice() { // /tmp is gone after a reboot; keep a copy on the card to see what happened overnight
-		const keep = "/tmp/p3/rootfs/write/opt/kobodash/kobodash.log"
-		if st, err := os.Stat(keep); err == nil && st.Size() > 256<<10 {
-			os.Rename(keep, keep+".old")
-		}
-		if f, err := os.OpenFile(keep, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-			log.SetOutput(io.MultiWriter(os.Stderr, cardLog(f)))
-		}
+		log.SetOutput(io.MultiWriter(os.Stderr, cardLog("/tmp/p3/rootfs/write/opt/kobodash/kobodash.log")))
 	}
 	log.Printf("kobodash %s starting", version)
 	if onDevice() && *wdTest {
@@ -874,12 +955,13 @@ func main() {
 	os.WriteFile("/sys/class/leds/pmic_ledsg/brightness", []byte("0"), 0644) // ipd used to switch the LED off
 	taps := make(chan image.Point, 8)
 	keys := make(chan struct{}, 4)
-	go readTouch(cfg, *calib, taps)
-	go readPowerKey(cfg.KeyInput, keys)
+	go forever(func() { readTouch(cfg, *calib, taps) })
+	go forever(func() { readPowerKey(cfg.KeyInput, keys) })
+	a.keys = keys
 
 	ensureScaling()
 	updated, _ := os.ReadFile(stateFile("updated")) // set by the binary that installed us
-	os.Remove(stateFile("updated"))
+	rmState("updated")
 	if len(updated) > 0 {
 		a.wokeBy = "güncelleme"
 	}
@@ -916,7 +998,7 @@ func main() {
 				sleepNow = true
 			}
 		case p := <-taps:
-			lastTouch = time.Now()
+			lastTouch, sleepNow = time.Now(), false // someone is using it: an earlier press to sleep is void
 			a.wokeBy = "dokunma"
 			a.skipWake = false
 			for i := len(a.hits) - 1; i >= 0; i-- {
@@ -955,7 +1037,7 @@ func main() {
 				log.Printf("wifi: pinned for %v with nobody around, unpinning", pinLease)
 			}
 			holdAwakeExpire()
-			if !cfg.WifiAlways && !a.wifiPinned && online() && time.Since(lastTouch) > wifiIdle && !sshActive() && !holdAwake.Load() {
+			if !cfg.WifiAlways && !a.wifiPinned && online() && time.Since(lastTouch) > wifiIdle && !a.sshHold() && !holdAwake.Load() {
 				wifiOffOnPurpose.Store(true) // awake without Wi-Fi by design: supervise.sh must not call it lost
 				wifiDown()
 			}
@@ -967,20 +1049,23 @@ func main() {
 		// Power model: asleep unless someone is using it. Never while ssh'd in or Wi-Fi is pinned.
 		// A loop, not an if: after a timed wake it goes straight back down instead of
 		// idling with Wi-Fi up until the next 10 s tick.
-		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() && !holdAwake.Load() {
+		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !a.sshHold() && !holdAwake.Load() {
 			sleepNow = false
 			woke := a.sleepUntil(a.nextSlot(a.updated))
 			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu"}[woke]
 			resumed = time.Now()
 			if woke == "timer" {
+				// lastTouch from before the sleep still looks recent (monotonic time stopped while
+				// asleep): forget it, or a tap just before a press-to-sleep keeps this wake up 2 min
+				lastTouch = time.Time{}
 				lastTry = time.Now()
 				a.refresh()
 				maybeUpdate()
-				if sshActive() || a.wifiPinned || holdAwake.Load() {
+				if a.sshHold() || a.wifiPinned || holdAwake.Load() {
 					a.show() // it won't go straight back down, so show the new data now
 				}
 				// no frame here: sleepUntil draws the one that stays up, and an e-ink flash
-				// per wake costs panel power (lastTouch stays old, so it goes straight back down)
+				// per wake costs panel power
 			} else {
 				lastTouch = time.Now() // power button (or a failed sleep): stay up for a while
 				a.show()
@@ -988,6 +1073,9 @@ func main() {
 					a.refresh()
 					a.show()
 				}
+				// the press that woke it is delivered after this work, which can take longer
+				// than the 3 s grace: count the grace from here, or that press sends it back down
+				resumed = time.Now()
 			}
 		}
 	}
@@ -1075,6 +1163,17 @@ func (a *App) sleepUntil(due time.Time) string {
 		awakeAfterFailedSleep()
 		return "error"
 	}
+	select { // pressed on the way down: someone wants it awake
+	case <-a.keys:
+		log.Printf("sleep: power button pressed on the way down, staying awake")
+		reconnectWifi()
+		return "button"
+	default:
+	}
+	wifiMu.Lock()
+	killConnect() // a connect the watchdog started on the way down must not resume half-done
+	wifiMu.Unlock()
+	httpClient.CloseIdleConnections() // the router forgets them while we sleep; reusing one stalls for 25 s
 	log.Printf("sleep: alarm in %v (next update %s) %s", d.Round(time.Second), due.In(a.loc).Format("15:04:05"), battery())
 	start := time.Now().Round(0) // wall clock; monotonic time stops in suspend
 	if err := suspend(); err != nil {
@@ -1153,6 +1252,7 @@ func readPowerKey(dev string, keys chan<- struct{}) {
 		log.Printf("power key: %v", err)
 		return
 	}
+	defer f.Close()
 	const evioCGrab = 0x40044590
 	syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), evioCGrab, 1)
 	buf := make([]byte, 16)

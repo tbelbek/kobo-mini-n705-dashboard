@@ -187,3 +187,23 @@ func TestGetIfChanged(t *testing.T) {
 		t.Fatalf("second should be a 304: %q %v", b, err)
 	}
 }
+
+// A missing state file is empty and known; one that can't be read is unknown.
+func TestReadState(t *testing.T) {
+	d := t.TempDir()
+	if s, ok := readState(d + "/none"); s != "" || !ok {
+		t.Errorf("missing: %q %v", s, ok)
+	}
+	os.WriteFile(d+"/f", []byte("x"), 0o644)
+	if s, ok := readState(d + "/f"); s != "x" || !ok {
+		t.Errorf("file: %q %v", s, ok)
+	}
+	if _, ok := readState(d); ok { // a directory: read error
+		t.Error("unreadable counted as known")
+	}
+}
+
+// The wrapped transport still closes idle connections (done before every suspend).
+func TestAnsweredClosesIdle(t *testing.T) {
+	var _ interface{ CloseIdleConnections() } = answered{http.DefaultTransport}
+}

@@ -99,17 +99,19 @@ func holdAwakeExpire() {
 	}
 }
 
-// noteNetwork counts refreshes in a row that found no route. A good one ends any healing.
-func noteNetwork(ok bool) {
-	if ok { // only the network ladder: a route says nothing about a hang elsewhere
+// noteNetwork counts refreshes in a row that got nothing over the network. A good one
+// ends the network ladder. True when it just reset Wi-Fi (step 1), worth another try now.
+func noteNetwork(ok bool) bool {
+	if ok { // only the network ladder: the network says nothing about a hang elsewhere
 		netFails.Store(0)
-		os.Remove(stateFile("heal-net"))
-		return
+		rmState("heal-net")
+		return false
 	}
 	if n := netFails.Add(1); n >= netFailWakes {
 		netFails.Store(0)
-		healNet(fmt.Sprintf("no network on %d refreshes in a row", n))
+		return healNet(fmt.Sprintf("no network on %d refreshes in a row", n))
 	}
+	return false
 }
 
 func startWatchdog(stuck time.Duration) {
@@ -119,6 +121,7 @@ func startWatchdog(stuck time.Duration) {
 			beatMu.Lock()
 			idle := time.Since(lastBeat)
 			beatMu.Unlock()
+			holdAwakeExpire() // here too: with the main loop hung, its own tick never ends the hold
 			if idle > stuck {
 				heal(fmt.Sprintf("main loop made no progress for %v", idle.Round(time.Second)))
 			}
@@ -131,7 +134,7 @@ func noteSuspend(ok bool) {
 	if ok { // got past drawing, Wi-Fi off and the kernel's freeze: whatever hung has cleared
 		suspendFails.Store(0)
 		leftBehind.Store(0)
-		os.Remove(stateFile("heal"))
+		rmState("heal")
 		return
 	}
 	if n := suspendFails.Add(1); n >= watchdogFails {
@@ -160,9 +163,13 @@ func healStep(last int, at, now int64, forget time.Duration) int {
 // Step 2 (restart) needs supervise.sh; a step that can't be recorded becomes onFail.
 func ladder(name string, forget time.Duration, onFail int) int {
 	p := stateFile(name)
+	state, ok := readState(p)
+	if !ok {
+		return onFail
+	}
 	var last int
 	var at int64
-	fmt.Sscan(readString(p), &last, &at)
+	fmt.Sscan(state, &last, &at)
 	now := time.Now().Unix()
 	step := healStep(last, at, now, forget)
 	if step == 2 && !supervised() {
@@ -203,20 +210,21 @@ func heal(reason string) {
 // (stale connect killed, module out and in), 2 restart kobodash, 3 reboot. Out of reboots
 // it carries on with the normal cycle: a router that is simply down must not keep the
 // device awake.
-func healNet(reason string) {
+func healNet(reason string) (retry bool) {
 	healMu.Lock()
 	defer healMu.Unlock()
 	switch ladder("heal-net", netForget, 1) { // unrecorded: a Wi-Fi reset is always safe
 	case 1:
 		log.Printf("watchdog: %s: network step 1, Wi-Fi reset (%s killed)", reason, killHelpers())
 		wifiOff()
-		reconnectWifi()
+		return true // the caller connects again
 	case 2:
 		log.Printf("watchdog: %s: network step 2, restarting kobodash", reason)
 		exit(0)
 	default: // no rollback: a router that is down says nothing about the release
 		rebootDevice(reason, false, false)
 	}
+	return false
 }
 
 // cleanWifi: before a wake's connect, clear what an earlier one left behind (a connect or
@@ -233,7 +241,7 @@ func cleanWifi() {
 	if pids, _ := helperPids(); len(pids) > 0 {
 		left = append(left, "helpers")
 	}
-	for _, l := range strings.Split(readString("/proc/modules"), "\n") {
+	for _, l := range strings.Split(readProc("/proc/modules"), "\n") {
 		if strings.HasPrefix(l, "dhd ") {
 			left = append(left, "dhd loaded")
 		}
@@ -261,7 +269,7 @@ func helperPids() (pids []int, names []string) {
 	dirs, _ := os.ReadDir("/proc")
 	for _, d := range dirs {
 		pid, err := strconv.Atoi(d.Name())
-		if comm := strings.TrimSpace(readString("/proc/" + d.Name() + "/comm")); err == nil && pid != os.Getpid() && helperNames[comm] {
+		if comm := strings.TrimSpace(readProc("/proc/" + d.Name() + "/comm")); err == nil && pid != os.Getpid() && helperNames[comm] {
 			pids, names = append(pids, pid), append(names, comm)
 		}
 	}
@@ -270,7 +278,7 @@ func helperPids() (pids []int, names []string) {
 
 // supervised: supervise.sh is alive to restart us.
 func supervised() bool {
-	pid, err := strconv.Atoi(strings.TrimSpace(readString("/run/kobodash-supervise.pid")))
+	pid, err := strconv.Atoi(strings.TrimSpace(readProc("/run/kobodash-supervise.pid")))
 	return err == nil && pid > 0 && syscall.Kill(pid, 0) == nil
 }
 
@@ -348,14 +356,16 @@ func writeWhole(p, s string) error {
 // one was just put back, else (hold) stay awake with Wi-Fi on for holdLease.
 func rebootDevice(reason string, rolledBack, hold bool) {
 	p := stateFile("watchdog-reboots")
+	budget, known := readState(p) // unreadable is unknown, not "no reboots yet"
 	var past []int64
-	for _, f := range strings.Fields(readString(p)) {
+	for _, f := range strings.Fields(budget) {
 		if t, err := strconv.ParseInt(f, 10, 64); err == nil {
 			past = append(past, t)
 		}
 	}
 	now := time.Now().Unix()
 	keep, ok := rebootAllowed(past, now)
+	ok = ok && known
 	var b strings.Builder
 	for _, t := range append(keep, now) {
 		fmt.Fprintf(&b, "%d\n", t)

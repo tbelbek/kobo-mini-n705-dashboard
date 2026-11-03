@@ -61,6 +61,11 @@ Never print `/proc/*/cmdline`: `connect_to_network.sh` carries the Wi-Fi passwor
 | `supervise: RESCUE: …` | the shell guard took over |
 | `update: … passed its first sleep cycle` | a new release is accepted |
 | `update: … rolling back` | a new release failed its trial |
+| `sleep: power button pressed on the way down, staying awake` | a press during the ~5 s it takes to go to sleep keeps it up |
+| `ssh: open for 3h0m0s, no longer keeping it awake` | a session (often a dead one) held it up 3 h: it sleeps anyway now |
+| `clock at 1970-…: syncing` | the RTC lost the time; ntpd fixes it, HTTPS fails until then |
+| `calendar: … not a calendar` | a feed answered with something else (login page, empty): the last good copy stays |
+| `show: panic: …` / `fetch: panic: …` | odd data tripped the code; the old frame stays and it carries on. Report it |
 
 In `wifi.log`, each line is stamped `+ 2.31s` from the start of the connect: the gaps show where the time goes (driver load, scan, DHCP).
 

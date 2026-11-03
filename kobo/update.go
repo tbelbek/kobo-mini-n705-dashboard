@@ -61,8 +61,11 @@ func (a *App) checkUpdate() bool {
 	if err := json.Unmarshal(b, &rel); err != nil || rel.Tag == "" {
 		return false
 	}
-	rejected, _ := os.ReadFile(filepath.Join(updateDir, "rejected"))
-	if rel.Tag == version || !newer(rel.Tag, version) || rel.Tag == strings.TrimSpace(string(rejected)) {
+	rejected, ok := readState(filepath.Join(updateDir, "rejected"))
+	if !ok {
+		return false // can't tell whether this release failed here before: not now
+	}
+	if rel.Tag == version || !newer(rel.Tag, version) || rel.Tag == strings.TrimSpace(rejected) {
 		// up to date, an older tag, or a release that already failed here: remember the
 		// ETag so the next check is a bodiless 304 instead of a download loop
 		if rel.Tag != version {
@@ -103,20 +106,21 @@ func installBinary(bin []byte, tag string) error {
 			return err
 		}
 	}
+	// every file reaches the card (fsync) before the swap: the battery can die mid-install
 	cur := filepath.Join(updateDir, "kobodash")
 	tmp := cur + ".new"
-	if err := os.WriteFile(tmp, bin, 0755); err != nil {
+	if err := writeSynced(tmp, bin, 0755); err != nil {
 		os.Remove(tmp)
 		return err
 	}
 	if old, err := os.ReadFile(cur); err == nil {
-		if err := os.WriteFile(cur+".prev", old, 0755); err != nil { // supervise.sh restores this if the new one dies at start
+		if err := writeSynced(cur+".prev", old, 0755); err != nil { // supervise.sh restores this if the new one dies at start
 			os.Remove(tmp)
 			return err
 		}
 	}
 	os.Remove(filepath.Join(updateDir, "starts"))
-	if err := os.WriteFile(filepath.Join(updateDir, "trying"), []byte(tag), 0o644); err != nil {
+	if err := writeSynced(filepath.Join(updateDir, "trying"), []byte(tag), 0o644); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -124,7 +128,26 @@ func installBinary(bin []byte, tag string) error {
 		os.Remove(filepath.Join(updateDir, "trying"))
 		return err
 	}
+	if d, err := os.Open(updateDir); err == nil { // the rename itself
+		d.Sync()
+		d.Close()
+	}
 	return nil
+}
+
+func writeSynced(p string, b []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // trialStart runs first thing on the device. A freshly installed release is on trial
@@ -147,7 +170,11 @@ func trialStart() {
 		rejectTrial(tag)
 		return
 	}
-	n, _ := strconv.Atoi(strings.TrimSpace(readString(filepath.Join(updateDir, "starts"))))
+	s, ok := readState(filepath.Join(updateDir, "starts"))
+	if !ok {
+		return // unknown count: don't reset it to 1
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(s))
 	n++
 	os.WriteFile(filepath.Join(updateDir, "starts"), []byte(strconv.Itoa(n)), 0o644)
 	if n < trialStarts {
@@ -204,16 +231,45 @@ func trialStopped() {
 func trialPassed() {
 	healMu.Lock()
 	defer healMu.Unlock()
-	if os.Remove(filepath.Join(updateDir, "trying")) == nil {
-		log.Printf("update: %s passed its first sleep cycle", version)
+	if readString(filepath.Join(updateDir, "trying")) == "" {
+		return // nothing on trial: the common case, one bounded read
 	}
-	os.Remove(filepath.Join(updateDir, "starts"))
+	within(5*time.Second, func() {
+		if os.Remove(filepath.Join(updateDir, "trying")) == nil {
+			log.Printf("update: %s passed its first sleep cycle", version)
+		}
+		os.Remove(filepath.Join(updateDir, "starts"))
+	})
 }
 
-func readString(p string) string {
+// readString: a small file's text, "" if missing, or if reading takes over 5 s (a stuck
+// card must not stall the watchdog or the update path)
+func readString(p string) string { s, _ := readState(p); return s }
+
+// readState is readString that tells a stuck read (ok false) from a missing file (""):
+// where an unknown must not be taken for "nothing there" (reboot budget, rejected release).
+func readState(p string) (s string, ok bool) {
+	var b []byte
+	var err error
+	if !within(5*time.Second, func() { b, err = os.ReadFile(p) }) {
+		log.Printf("%s: read stuck", p)
+		return "", false
+	}
+	if err != nil && !os.IsNotExist(err) { // there but unreadable: unknown, not empty
+		log.Printf("%s: %v", p, err)
+		return "", false
+	}
+	return string(b), true
+}
+
+// readProc reads a /proc or /run file: RAM, can't stall, no need for a goroutine each.
+func readProc(p string) string {
 	b, _ := os.ReadFile(p)
 	return string(b)
 }
+
+// rmState removes a state file on the card, giving up after 5 s.
+func rmState(name string) { within(5*time.Second, func() { os.Remove(stateFile(name)) }) }
 
 // newer: tag is a later vX.Y.Z than cur. Tags that don't parse are let through, as before.
 func newer(tag, cur string) bool {
@@ -288,8 +344,8 @@ func getIfChanged(u, etagFile string) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	if e, _ := os.ReadFile(etagFile); len(e) > 0 {
-		req.Header.Set("If-None-Match", strings.TrimSpace(string(e)))
+	if e := strings.TrimSpace(readString(etagFile)); e != "" {
+		req.Header.Set("If-None-Match", e)
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {

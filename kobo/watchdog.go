@@ -382,6 +382,7 @@ func rebootDevice(reason string, rolledBack, hold bool) {
 		return
 	}
 	log.Printf("watchdog: %s: step 3, rebooting", reason)
+	flushLog()
 	within(10*time.Second, func() { syscall.Sync() }) // a stuck filesystem must not stop the reboot
 	if err := sysReboot(); err != nil {
 		log.Printf("watchdog: reboot: %v", err)

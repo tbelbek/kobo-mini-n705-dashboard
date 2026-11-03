@@ -714,6 +714,10 @@ type Calendar struct {
 	Feeds   []string // personal feeds
 	Holiday string   // Google's SE holiday feed ("Allmän helgdag" = red day)
 	raw     map[string]string
+	// the last Events answer: every frame asks for the same days, and parsing the
+	// feeds again costs CPU time (battery) on each one
+	memoKey string
+	memo    []Event
 }
 
 func (c *Calendar) Refresh() error {
@@ -733,12 +737,18 @@ func (c *Calendar) Refresh() error {
 			}
 			continue // keep the previous copy of this feed
 		}
-		c.raw[u] = string(b)
+		if c.raw[u] != string(b) {
+			c.raw[u], c.memoKey = string(b), ""
+		}
 	}
 	return firstErr
 }
 
 func (c *Calendar) Events(lo, hi time.Time, loc *time.Location) []Event {
+	key := lo.String() + hi.String() + loc.String()
+	if key == c.memoKey {
+		return c.memo
+	}
 	var out []Event
 	for u, raw := range c.raw {
 		for _, e := range parseICS(raw, lo, hi, loc) {
@@ -752,5 +762,6 @@ func (c *Calendar) Events(lo, hi time.Time, loc *time.Location) []Event {
 		}
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Start.Before(out[b].Start) })
+	c.memoKey, c.memo = key, out
 	return out
 }

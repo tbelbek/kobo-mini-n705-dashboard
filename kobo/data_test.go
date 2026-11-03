@@ -239,3 +239,27 @@ func TestICSRecurrence(t *testing.T) {
 		}
 	}
 }
+
+// Events is parsed once and reused until a feed's text changes.
+func TestEventsMemo(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	f := t.TempDir() + "/a.ics"
+	ics := func(day string) {
+		os.WriteFile(f, []byte("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:"+day+"\r\nSUMMARY:x\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"), 0o644)
+	}
+	c := Calendar{Feeds: []string{"file://" + f}}
+	lo, hi := time.Date(2026, 11, 1, 0, 0, 0, 0, loc), time.Date(2026, 11, 30, 0, 0, 0, 0, loc)
+	ics("20261105")
+	c.Refresh()
+	if e := c.Events(lo, hi, loc); len(e) != 1 || e[0].Start.Day() != 5 {
+		t.Fatalf("first parse: %v", e)
+	}
+	ics("20261107")
+	if e := c.Events(lo, hi, loc); e[0].Start.Day() != 5 {
+		t.Fatal("parsed again without a refresh")
+	}
+	c.Refresh()
+	if e := c.Events(lo, hi, loc); len(e) != 1 || e[0].Start.Day() != 7 {
+		t.Fatalf("changed feed not picked up: %v", e)
+	}
+}

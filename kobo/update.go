@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var version = "dev" // set with -ldflags "-X main.version=..."
@@ -181,7 +182,8 @@ func trialRollback(why string) bool {
 	return true
 }
 
-var exit = os.Exit // tests replace it
+// exit flushes the card log first; tests replace it.
+var exit = func(code int) { flushLog(); os.Exit(code) }
 
 func rejectTrial(tag string) {
 	os.WriteFile(filepath.Join(updateDir, "rejected"), []byte(tag), 0o644)
@@ -243,7 +245,10 @@ func ensureP3() error {
 		return nil
 	}
 	os.MkdirAll("/tmp/p3", 0755)
-	return runCmd("mount", "-t", "ext4", "/dev/mmcblk0p3", "/tmp/p3")
+	if out, err := runBounded(30*time.Second, "mount", "-t", "ext4", "/dev/mmcblk0p3", "/tmp/p3"); err != nil {
+		return fmt.Errorf("mount: %v %s", err, out)
+	}
+	return nil
 }
 
 // release tooling: kobodash -genkey <keyfile>, kobodash -sign <keyfile> <file>

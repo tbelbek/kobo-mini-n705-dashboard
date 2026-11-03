@@ -28,19 +28,20 @@ Type sizes come from viewing distance, not taste. At 200 ppi one pixel is 0.127 
 
 The device is asleep most of the time and the last frame stays on the panel (e-ink needs no power to hold it).
 
-- Every `REFRESH_MIN` (120 by default: on battery, each wake costs a Wi-Fi association) the RTC alarm wakes it. It brings Wi-Fi up, fetches the weather (calendars every `CAL_REFRESH_MIN`, 240 by default), redraws and suspends again.
+- The RTC alarm wakes it on a fixed clock grid every `REFRESH_MIN` (120 by default: 06:00, 08:00 … 22:00; on battery each wake costs a Wi-Fi association). It brings Wi-Fi up, fetches the weather (calendars every `CAL_REFRESH_MIN`, 240 by default), redraws and suspends again. A power-button wake in between refreshes too but doesn't move the grid; a refresh less than 30 minutes before a slot counts as that slot.
 - **Quiet hours** (`QUIET`, 23-6 by default; `QUIET=off` disables them): no timed wakes at night. The alarm is set straight to 06:00, which saves a third of the daily Wi-Fi associations.
 - The **power button** wakes it for `AWAKE_SEC` (120) of touch use. Pressing it while awake puts it to sleep.
 - Touch can't wake the Mini from suspend: only the keypad and USB are wakeup sources.
 - While awake the CPU uses the `conservative` governor (InkBox pins it at 800 MHz) and Wi-Fi is off unless needed.
 - It never suspends while an ssh session is open or Wi-Fi is pinned on.
-- **Wi-Fi:** each wake runs InkBox's own `connect_to_network.sh`, and a frame identical to the one on the panel isn't redrawn. `wifi: up in …` in the log shows the time per wake. (A faster hand-rolled `wpa_supplicant` path was tried in v0.7.8–v0.7.18 and removed: once it actually ran, timed wakes stopped getting Wi-Fi.)
+- **Wi-Fi:** each wake runs InkBox's own `connect_to_network.sh` and counts the network as up only once the default route exists (udhcpc sets the address a moment earlier, and fetches in between fail with "network is unreachable"). Anything an earlier wake left behind (a connect still running, the driver still loaded, a stale pid file) is cleared first. `wifi: up in …` in the log shows the time per wake, and `wifi.log` on the card has every line of the scripts stamped with seconds since the connect started. (A faster hand-rolled `wpa_supplicant` path was tried in v0.7.8–v0.7.18 and removed: once it actually ran, timed wakes stopped getting Wi-Fi.)
+- Going to sleep, it draws the frame first and switches Wi-Fi off last, so a step that hangs on the way down leaves it reachable. One full e-ink refresh per timed wake.
 - **Low-battery alert** (optional): set `TELEGRAM_TOKEN` (a bot from @BotFather) and `TELEGRAM_CHAT` (plus `TELEGRAM_THREAD` for a forum topic) and it sends one Telegram message when the battery drops to `BATT_ALERT` (20%), and one more at half of that. It rearms once the battery is back above `BATT_ALERT`+10.
 - **Wake log** (optional): `TELEGRAM_LOG_THREAD` sends a silent one-liner to that forum topic on every refresh (version, what woke it, battery, Wi-Fi time). The N705's `mc13892_bat` has no real fuel gauge: `charge_now` and `current_now` are a constant 500000 and `voltage_now` repeats the percentage, so per-wake mAh can't be measured on the device. It goes out alongside the weather fetch, so it doesn't keep the radio up longer.
 - After a timed wake it goes straight back to sleep once the frame is drawn, and the weather, warning and calendar fetches run in parallel: both shorten the time the radio is on.
 - The update check is a conditional request: when the latest release hasn't changed GitHub answers with an empty 304.
 
-Battery life on the 1000 mAh (3.7 Wh) cell is still being measured: every sleep and wake line in the log ends with the battery level, so the drain per day can be read off `kobodash.log`. A rough estimate is a week or more at hourly updates. Measurements will be added here once there are numbers.
+Battery life on the 1000 mAh (3.7 Wh) cell is still being measured: every sleep and wake line in the log ends with the battery level, so the drain per day can be read off `kobodash.log` (the night's 22:00–06:00 sleep gives the suspend drain). Measurements will be added here once there are numbers.
 
 ## Before you start
 
@@ -144,11 +145,23 @@ The picture is drawn in landscape and turned a quarter turn onto the portrait pa
 
 A device running a release build updates itself. After every timed refresh, while Wi-Fi is up, it asks GitHub for the latest release of `UPDATE_REPO` (a bodiless 304 when nothing changed). If the tag is a newer vX.Y.Z than its own, it downloads `kobodash-armv7` and `kobodash-armv7.sig` and checks the ed25519 signature against the public key compiled into it (`kobo/update.go`, or `UPDATE_PUBKEY`). Only a binary that verifies gets installed. The private key lives on the maintainer's machine and never in the repo, so a compromised GitHub account can't push code to devices.
 
-`supervise.sh` runs the app. The app exits after installing an update and the supervisor starts the new binary. If that binary exits with an error within a minute, the supervisor puts the previous one (`kobodash.prev`) back.
+`supervise.sh` runs the app. The app exits after installing an update and the supervisor starts the new binary. If that binary exits with an error within a minute, the supervisor puts the previous one (`kobodash.prev`) back. A new release is also **on trial** until it has slept, woken and reached the network once: started five times without that, it puts `kobodash.prev` back itself. A release that failed is remembered (`rejected`) and not downloaded again.
 
 To put a device on the release track, deploy a release build once: `VERSION=v0.1.0 kobo/deploy.sh <ip>`. Builds deployed without `VERSION` report `dev` and never self-update.
 
 To publish a release: `tools/release.sh v0.2.0` builds, signs, tags and uploads it. For your own fork, create a key with `go run ./kobo -genkey ~/.config/kobodash/release.key`, put the printed public key in `kobo/update.go` (or `UPDATE_PUBKEY`), and set `UPDATE_REPO`.
+
+## Staying reachable
+
+The reader hangs where nobody may press its button for days, so a fault must never leave it awake with the radio off. Three layers, each one working without the one above it:
+
+1. **In kobodash.** Helpers that can hang in the kernel (FBInk, the Wi-Fi scripts) run in their own process group and are killed after 30 s instead of blocking the main loop. A failed suspend turns Wi-Fi back on. Writes to the card log never block (a stalled card loses lines, not the device). A watchdog goroutine climbs a ladder kept on the card when the main loop hasn't moved for 10 minutes awake, after 6 failed suspends in a row, or when 3 helpers got stuck: 1 kill the stuck helpers and turn Wi-Fi on, 2 restart kobodash, 3 roll a release on trial back and reboot. A separate network ladder starts after 3 refreshes in a row without a route: Wi-Fi reset, restart, reboot. Reboots are limited to 3 a day (`watchdog-reboots` on the card); past that it stays awake with Wi-Fi on for 6 hours so someone can look (a router that is merely down never keeps it awake). A good sleep, or an hour without trouble, starts over.
+2. **In supervise.sh, without kobodash.** A busybox loop watches kobodash's heartbeat (`/tmp/kobodash.beat`) and the route. Awake for 5 minutes without a route (not counting a radio switched off on purpose, or someone touching the screen), or 12 minutes with the heartbeat frozen, means **rescue mode**: kill kobodash, bring Wi-Fi and sshd up, send a Telegram message with the IP, stay reachable an hour, then reboot within the same daily budget. Time asleep never counts: a wall-clock jump between two checks means the device was suspended. Crash loops back off (3, 10, 30, 60 s), and a missing binary never ends the loop. `image/test-supervise.sh` runs it against fakes.
+3. **At boot (run.sh).** Every step is bounded the same way, so nothing can keep supervise.sh from starting.
+
+`supervise.sh` and `run.sh` are part of the image; a device updated over the air keeps the copies it was built with. To give an older device the new ones, see `docs/RUNBOOK.md`.
+
+What the card keeps (`/tmp/p3/rootfs/write/opt/kobodash/`): `kobodash.log` (the log, kept across reboots), `wifi.log` (the Wi-Fi scripts, time-stamped), `suspend-fail.log` (kernel log and stuck tasks after a failed suspend), `trying`/`starts`/`rejected` (update trial), `heal`/`heal-net` (ladder steps), `watchdog-reboots` (reboot budget).
 
 ## Daily passages
 
@@ -164,7 +177,7 @@ How they were chosen: `tools/quote_candidates.py` and `tools/poem_candidates.py`
 cd kobo
 GOTOOLCHAIN=go1.23.12 go build -o /tmp/kd .
 /tmp/kd -conf ~/.config/kobodash/dash.conf -once out.png                      # render one frame on your desk
-/tmp/kd -conf ... -once out.png -view month -now 2026-11-02T08:00 -fakewarn   # other view / date / sample warnings
+/tmp/kd -conf ... -once out.png -sel 2026-11-20 -now 2026-11-02T08:00 -fakewarn  # other day / time / sample warnings
 ```
 
 On the device:
@@ -174,8 +187,10 @@ On the device:
 | `-calib` | prints raw touch coordinates |
 | `-suspendtest 60` | arms the RTC alarm, suspends, and reports how long it slept |
 | `-version` | prints the build version |
+| `-notify "text"` | sends one Telegram message to the alert topic (supervise.sh's rescue mode uses it) |
+| `-watchdogtest` | hangs the main loop on purpose; the watchdog must act within ~3 minutes |
 
-`go test ./kobo` runs the self-update tests against a fake GitHub (good signature installs, wrong key is rejected, same version is left alone).
+`go test ./kobo` runs the unit tests: self-update against a fake GitHub (signature, trial, rollback), the wake grid across DST, ICS recurrences, the watchdog's ladder and reboot budget. `image/test-supervise.sh` runs supervise.sh against a fake device (no network, frozen heartbeat, crash loop, stuck card and more).
 
 `web/server.py` is the earlier browser version (stdlib Python, server-rendered HTML). It also serves `/kobo/probe`, a read-only device survey script, and accepts `/kobo/report`. It's a dev tool with no authentication: run it on a trusted LAN only.
 
@@ -190,6 +205,12 @@ On the device:
 - **CPU governor:** there is no `ondemand`; the choices are `conservative`, `powersave`, `userspace` and `performance`.
 - **InkBox's power daemon:** if you keep `ipd`, set `/data/config/20-sleep_daemon/7-idleSleep` to `0` to stop its auto-sleep. kobodash grabs the touch device, so ipd would think the device is idle.
 - **Wi-Fi:** the interface is `eth0`. `toggle.sh off` unloads the driver and cuts its power; `connect_to_network.sh SSID PSK` connects.
+- **Address is not network:** udhcpc sets the address before the default route; wait for the route, or every fetch in that gap fails with "network is unreachable".
+- **`toggle.sh on` exit status** is `wlarm_le up`'s and can be 1 with a working radio: don't chain the connect behind it with `&&`.
+- **RTC alarm read-back:** the MSP430 driver takes the alarm as seconds from now and reads it back as 1970-01-01 00:00:01, so only the enabled flag can be checked.
+- **Root is FUSE** (unionfs-fuse over squashfuse). A task waiting on FUSE while its daemon is frozen can make suspend fail with "device or resource busy" after the kernel's 20 s freezer timeout.
+- **busybox `timeout`** only signals its direct child, and a task stuck in the kernel ignores signals while the shell keeps waiting: run such steps in the background in their own session and stop waiting instead.
+- **dhd's "dongle image file download failed"** at module load is harmless: the firmware loads when the interface comes up.
 - **debugfs:** `-f cmdfile` must come before the image path. Otherwise it reads commands from stdin, which silently ate the rest of a heredoc script.
 
 ## Going back

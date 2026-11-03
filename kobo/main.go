@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -512,6 +513,41 @@ func openWifiLog(t0 time.Time) *os.File {
 	return <-done
 }
 
+// cardLog writes the log to the card from its own goroutine. A card that stalls must not
+// stall whoever logs (the main loop, the watchdog): lines that don't fit the queue are
+// dropped, the copy in /tmp (stderr) still has them.
+func cardLog(f *os.File) io.Writer {
+	q := make(chan []byte, 256)
+	go func() {
+		for b := range q {
+			f.Write(b)
+			cardPending.Add(-1)
+		}
+	}()
+	return writerFunc(func(p []byte) (int, error) {
+		cardPending.Add(1)
+		select {
+		case q <- append([]byte(nil), p...):
+		default:
+			cardPending.Add(-1)
+		}
+		return len(p), nil
+	})
+}
+
+var cardPending atomic.Int32
+
+// flushLog gives the card log up to 2 s to catch up before the process exits or reboots.
+func flushLog() {
+	for end := time.Now().Add(2 * time.Second); cardPending.Load() > 0 && time.Now().Before(end); {
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
+
 // stamped prefixes every line written through it with the seconds since t0. It never reports
 // a write error (a full card, say): io.Copy would stop draining the pipe and block the scripts.
 type stamped struct {
@@ -811,7 +847,7 @@ func main() {
 			os.Rename(keep, keep+".old")
 		}
 		if f, err := os.OpenFile(keep, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-			log.SetOutput(io.MultiWriter(os.Stderr, f))
+			log.SetOutput(io.MultiWriter(os.Stderr, cardLog(f)))
 		}
 	}
 	log.Printf("kobodash %s starting", version)
@@ -831,10 +867,10 @@ func main() {
 			s := <-stop
 			trialStopped()
 			log.Printf("stopped by %v", s)
-			os.Exit(0)
+			exit(0)
 		}()
 	}
-	exec.Command("killall", "-9", "inkbox-splash").Run()                     // InkBox's boot splash keeps drawing otherwise
+	runBounded(10*time.Second, "killall", "-9", "inkbox-splash")             // InkBox's boot splash keeps drawing otherwise
 	os.WriteFile("/sys/class/leds/pmic_ledsg/brightness", []byte("0"), 0644) // ipd used to switch the LED off
 	taps := make(chan image.Point, 8)
 	keys := make(chan struct{}, 4)
@@ -854,7 +890,7 @@ func main() {
 	lastBeat := time.Now()
 	maybeUpdate := func() { // right after a refresh, while Wi-Fi is up: one GitHub call, a 304 when nothing is new
 		if a.checkUpdate() {
-			os.Exit(0) // run.sh starts the new binary
+			exit(0) // supervise.sh starts the new binary
 		}
 	}
 	maybeUpdate()
@@ -1072,7 +1108,7 @@ func awakeAfterFailedSleep() {
 // kernelLog appends the kernel log's last 300 lines to suspend-fail.log on the card (kept small).
 func kernelLog() {
 	const lines = 300
-	out, err := exec.Command("dmesg").Output()
+	out, err := runBounded(10*time.Second, "dmesg")
 	if err != nil {
 		log.Printf("dmesg: %v", err)
 		return
@@ -1132,13 +1168,6 @@ func readPowerKey(dev string, keys chan<- struct{}) {
 			}
 		}
 	}
-}
-
-func runCmd(name string, args ...string) error {
-	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %v %s", name, err, out)
-	}
-	return nil
 }
 
 // alertStep decides whether a battery reading is worth a message. last is the

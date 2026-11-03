@@ -44,17 +44,17 @@ type Place struct {
 
 type Weather struct {
 	Current struct {
-		Temp float64 `json:"temperature_2m"`
-		Code int     `json:"weather_code"`
-	} `json:"current"`
+		Temp float64
+		Code int
+	}
 	Hourly struct {
-		Time    []string  `json:"time"`
-		Temp    []float64 `json:"temperature_2m"`
-		Feels   []float64 `json:"apparent_temperature"`
-		Code    []int     `json:"weather_code"`
-		Wind    []float64 `json:"wind_speed_10m"`
-		WindDir []float64 `json:"wind_direction_10m"`
-	} `json:"hourly"`
+		Time    []string
+		Temp    []float64
+		Feels   []float64
+		Code    []int
+		Wind    []float64
+		WindDir []float64
+	}
 	Span   string  // "bugün" | "yarın": which day Lo/Hi cover; "" = no range
 	Lo, Hi float64 // that day's min / max
 }
@@ -182,16 +182,6 @@ func fetchSMHI(p Place, hours int) (*Weather, error) {
 	}
 	w.Current.Temp, w.Current.Code = h.Temp[0], h.Code[0]
 	return &w, nil
-}
-
-var wmo = map[int]string{
-	0: "Açık", 1: "Çoğunlukla açık", 2: "Parçalı bulutlu", 3: "Kapalı",
-	45: "Sisli", 48: "Kırağılı sis", 51: "Hafif çisenti", 53: "Çisenti", 55: "Yoğun çisenti",
-	56: "Dondurucu çisenti", 57: "Yoğun dondurucu çisenti", 61: "Hafif yağmur", 63: "Yağmur",
-	65: "Şiddetli yağmur", 66: "Dondurucu yağmur", 67: "Şiddetli dondurucu yağmur",
-	71: "Hafif kar", 73: "Kar", 75: "Yoğun kar", 77: "Kar taneleri", 80: "Hafif sağanak",
-	81: "Sağanak", 82: "Şiddetli sağanak", 85: "Hafif kar sağanağı", 86: "Kar sağanağı",
-	95: "Gök gürültülü fırtına", 96: "Dolulu fırtına", 99: "Şiddetli dolulu fırtına",
 }
 
 func in(c int, set ...int) bool {
@@ -327,18 +317,12 @@ func fetchWarnings(region string) ([]Warning, error) {
 	return out, nil
 }
 
-func at(s []int, i int) int {
+// at: s[i], or the zero value past the end
+func at[T any](s []T, i int) (v T) {
 	if i < len(s) {
-		return s[i]
+		v = s[i]
 	}
-	return 0
-}
-
-func atf(s []float64, i int) float64 {
-	if i < len(s) {
-		return s[i]
-	}
-	return 0
+	return
 }
 
 // ---------------------------------------------------------------- calendar

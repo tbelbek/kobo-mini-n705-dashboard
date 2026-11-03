@@ -159,7 +159,7 @@ func TestNewer(t *testing.T) {
 	}{
 		{"v0.7.26", "v0.7.25", true}, {"v0.7.10", "v0.7.9", true}, {"v0.8", "v0.7.30", true},
 		{"v0.7.25", "v0.7.25", false}, {"v0.7.3", "v0.7.25", false}, {"v1", "v0.9.9", true},
-		{"nightly", "v0.7.25", true},
+		{"nightly", "v0.7.25", true}, {"v1.0", "v1", false}, {"v1", "v1.0", false},
 	} {
 		if got := newer(c.a, c.b); got != c.want {
 			t.Errorf("newer(%s, %s) = %v", c.a, c.b, got)

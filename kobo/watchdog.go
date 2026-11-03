@@ -149,14 +149,30 @@ func noteLeftBehind(name string) {
 }
 
 // healStep: the step to take now, given the last step taken and when (unix seconds).
-func healStep(last int, at, now int64) int {
-	if last < 1 || now-at > int64(healForget/time.Second) || at > now {
+func healStep(last int, at, now int64, forget time.Duration) int {
+	if last < 1 || now-at > int64(forget/time.Second) || at > now {
 		return 1
 	}
-	if last >= 3 {
-		return 3
+	return min(last+1, 3)
+}
+
+// ladder moves the ladder kept in card file name one step on and returns the step to take.
+// Step 2 (restart) needs supervise.sh; a step that can't be recorded becomes onFail.
+func ladder(name string, forget time.Duration, onFail int) int {
+	p := stateFile(name)
+	var last int
+	var at int64
+	fmt.Sscan(readString(p), &last, &at)
+	now := time.Now().Unix()
+	step := healStep(last, at, now, forget)
+	if step == 2 && !supervised() {
+		step = 3 // nothing would restart us
 	}
-	return last + 1
+	if err := writeAtomic(p, fmt.Sprintf("%d %d\n", step, now)); err != nil {
+		log.Printf("watchdog: can't record the %s step (%v)", name, err)
+		step = onFail
+	}
+	return step
 }
 
 func heal(reason string) {
@@ -165,22 +181,9 @@ func heal(reason string) {
 	if holdAwake.Load() {
 		return
 	}
-	p := stateFile("heal")
-	var last int
-	var at int64
-	fmt.Sscan(readString(p), &last, &at)
-	now := time.Now().Unix()
-	step := healStep(last, at, now)
-	if step == 2 && !supervised() {
-		step = 3 // nothing would restart us
-	}
-	if err := writeAtomic(p, fmt.Sprintf("%d %d\n", step, now)); err != nil {
-		// the ladder can't move on without its state: go to the end (a reboot can't be
-		// recorded either, so that ends awake with Wi-Fi on) instead of repeating a step
-		log.Printf("watchdog: can't record the heal step (%v)", err)
-		step = 3
-	}
-	switch step {
+	// unrecorded: go to the end (a reboot can't be recorded either, so that ends awake
+	// with Wi-Fi on) rather than repeat a step forever
+	switch ladder("heal", healForget, 3) {
 	case 1:
 		log.Printf("watchdog: %s: step 1, killing stuck helpers (%s), Wi-Fi back on", reason, killHelpers())
 		wifiOff()
@@ -203,23 +206,7 @@ func heal(reason string) {
 func healNet(reason string) {
 	healMu.Lock()
 	defer healMu.Unlock()
-	p := stateFile("heal-net")
-	var last int
-	var at int64
-	fmt.Sscan(readString(p), &last, &at)
-	now := time.Now().Unix()
-	step := 1
-	if last >= 1 && at <= now && now-at <= int64(netForget/time.Second) {
-		step = min(last+1, 3)
-	}
-	if step == 2 && !supervised() {
-		step = 3
-	}
-	if err := writeAtomic(p, fmt.Sprintf("%d %d\n", step, now)); err != nil {
-		log.Printf("watchdog: can't record the network step (%v): Wi-Fi reset only", err)
-		step = 1
-	}
-	switch step {
+	switch ladder("heal-net", netForget, 1) { // unrecorded: a Wi-Fi reset is always safe
 	case 1:
 		log.Printf("watchdog: %s: network step 1, Wi-Fi reset (%s killed)", reason, killHelpers())
 		wifiOff()
@@ -243,7 +230,7 @@ func cleanWifi() {
 		return // a connect is on its way: that is not a leftover
 	}
 	var left []string
-	if helpersRunning() {
+	if pids, _ := helperPids(); len(pids) > 0 {
 		left = append(left, "helpers")
 	}
 	for _, l := range strings.Split(readString("/proc/modules"), "\n") {
@@ -269,14 +256,16 @@ var helperNames = map[string]bool{"fbink": true, "toggle.sh": true, "connect_to_
 	"prepare_changin": true, "udhcpc": true, "wpa_supplicant": true, "wpa_passphrase": true,
 	"wlarm_le": true, "rmmod": true, "insmod": true, "dmesg": true}
 
-func helpersRunning() bool {
+// helperPids: the helpers running now, with their names.
+func helperPids() (pids []int, names []string) {
 	dirs, _ := os.ReadDir("/proc")
 	for _, d := range dirs {
-		if _, err := strconv.Atoi(d.Name()); err == nil && helperNames[strings.TrimSpace(readString("/proc/"+d.Name()+"/comm"))] {
-			return true
+		pid, err := strconv.Atoi(d.Name())
+		if comm := strings.TrimSpace(readString("/proc/" + d.Name() + "/comm")); err == nil && pid != os.Getpid() && helperNames[comm] {
+			pids, names = append(pids, pid), append(names, comm)
 		}
 	}
-	return false
+	return
 }
 
 // supervised: supervise.sh is alive to restart us.
@@ -287,16 +276,11 @@ func supervised() bool {
 
 // killHelpers SIGKILLs the programs kobodash runs that could be stuck; returns their names.
 func killHelpers() string {
+	pids, names := helperPids()
 	var killed []string
-	dirs, _ := os.ReadDir("/proc")
-	for _, d := range dirs {
-		pid, err := strconv.Atoi(d.Name())
-		if err != nil || pid == os.Getpid() {
-			continue
-		}
-		comm := strings.TrimSpace(readString("/proc/" + d.Name() + "/comm")) // 15 chars at most
-		if helperNames[comm] && syscall.Kill(pid, syscall.SIGKILL) == nil {
-			killed = append(killed, comm)
+	for i, p := range pids {
+		if syscall.Kill(p, syscall.SIGKILL) == nil {
+			killed = append(killed, names[i])
 		}
 	}
 	if len(killed) == 0 {
@@ -318,36 +302,26 @@ func rebootAllowed(past []int64, now int64) ([]int64, bool) {
 	return keep, len(keep) < watchdogMax
 }
 
-// openBounded opens a card file for appending, giving up after 5 s (nil: go on without it).
-func openBounded(p string) (*os.File, error) {
-	type res struct {
-		f   *os.File
-		err error
-	}
-	done := make(chan res, 1)
-	go func() {
-		f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		done <- res{f, err}
-	}()
+// within runs f but stops waiting for it after d (false): a stuck card or filesystem
+// must not stall the watchdog or Wi-Fi. f carries on in the background.
+func within(d time.Duration, f func()) bool {
+	done := make(chan struct{})
+	go func() { f(); close(done) }()
 	select {
-	case r := <-done:
-		return r.f, r.err
-	case <-time.After(5 * time.Second):
-		return nil, fmt.Errorf("%s: open stuck", p)
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
 	}
 }
 
-// writeAtomic replaces a small card file whole, or not at all, and gives up after 5 s:
-// a stuck card must not stall the watchdog.
+// writeAtomic replaces a small card file whole, or not at all, within 5 s.
 func writeAtomic(p, s string) error {
-	done := make(chan error, 1)
-	go func() { done <- writeWhole(p, s) }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(5 * time.Second):
+	var err error
+	if !within(5*time.Second, func() { err = writeWhole(p, s) }) {
 		return fmt.Errorf("%s: write stuck", p)
 	}
+	return err
 }
 
 func writeWhole(p, s string) error {
@@ -408,12 +382,7 @@ func rebootDevice(reason string, rolledBack, hold bool) {
 		return
 	}
 	log.Printf("watchdog: %s: step 3, rebooting", reason)
-	synced := make(chan struct{})
-	go func() { syscall.Sync(); close(synced) }()
-	select { // a stuck filesystem must not stop the reboot
-	case <-synced:
-	case <-time.After(10 * time.Second):
-	}
+	within(10*time.Second, func() { syscall.Sync() }) // a stuck filesystem must not stop the reboot
 	if err := sysReboot(); err != nil {
 		log.Printf("watchdog: reboot: %v", err)
 		setHoldAwake()

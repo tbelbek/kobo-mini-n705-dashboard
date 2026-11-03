@@ -268,7 +268,7 @@ func (a *App) drawNow(img *image.Gray, y int) {
 		s := "veri " + a.weatherAt.In(a.loc).Format("15:04")
 		text(img, split-textW(tiny, s), y+28, s, tiny, black)
 	}
-	x = text(img, lx, y+56, fmt.Sprintf("his %d°", round(atf(h.Feels, 0))), small, black)
+	x = text(img, lx, y+56, fmt.Sprintf("his %d°", round(at(h.Feels, 0))), small, black)
 	if w := a.wDetail; w.Span != "" {
 		x = text(img, x, y+56, " · ", small, black)
 		x = text(img, x, y+56, fmt.Sprintf("%d° / %d°", round(w.Lo), round(w.Hi)), bold, black)
@@ -276,7 +276,7 @@ func (a *App) drawNow(img *image.Gray, y int) {
 			text(img, x+6, y+56, w.Span, tiny, black)
 		}
 	}
-	text(img, lx, y+84, fmt.Sprintf("%s %d km/sa", compass(atf(h.WindDir, 0)), round(atf(h.Wind, 0))), small, black)
+	text(img, lx, y+84, fmt.Sprintf("%s %d km/sa", compass(at(h.WindDir, 0)), round(at(h.Wind, 0))), small, black)
 	if up, t, ok := a.sun(); ok {
 		arrow := "↓"
 		if up {
@@ -315,7 +315,7 @@ func (a *App) drawHours(img *image.Gray, x, y, n int) {
 		cx := x + (i-1)*sw + sw/2
 		centerText(img, hourLabel(h.Time[i]), face(false, tTiny), cx, y+22)
 		icon(img, wcat(at(h.Code, i)), cx-34, y+26, 30)
-		text(img, cx, y+53, fmt.Sprintf("%d°", round(atf(h.Temp, i))), face(true, tSmall), black)
+		text(img, cx, y+53, fmt.Sprintf("%d°", round(at(h.Temp, i))), face(true, tSmall), black)
 	}
 }
 

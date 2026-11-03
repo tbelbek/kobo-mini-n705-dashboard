@@ -9,7 +9,7 @@ func TestHealStep(t *testing.T) {
 	for _, c := range []struct{ last, ago, want int }{
 		{0, 0, 1}, {1, 600, 2}, {2, 600, 3}, {3, 600, 3}, {2, 4000, 1}, {3, -60, 1},
 	} {
-		if got := healStep(c.last, now-int64(c.ago), now); got != c.want {
+		if got := healStep(c.last, now-int64(c.ago), now, healForget); got != c.want {
 			t.Errorf("last %d %ds ago: step %d, want %d", c.last, c.ago, got, c.want)
 		}
 	}

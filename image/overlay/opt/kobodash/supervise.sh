@@ -51,12 +51,16 @@ bounded() {
 	setsid "$@" >>"$LOG" 2>&1 </dev/null &
 	bp=$!
 	i=0
-	while kill -0 $bp 2>/dev/null && [ $i -lt "$s" ]; do
+	while kill -0 $bp 2>/dev/null; do
+		if [ $i -ge "$s" ]; then # killed and left behind, never waited for
+			kill -9 -$bp 2>/dev/null
+			kill -9 $bp 2>/dev/null
+			return 124
+		fi
 		sleep 1
 		i=$((i + 1))
 	done
-	kill -9 -$bp 2>/dev/null
-	kill -9 $bp 2>/dev/null
+	wait $bp
 }
 
 # a connect started by the rescue, killed as a whole before another one or when done
@@ -109,9 +113,16 @@ notify() {
 # reboot times (unix seconds, one per line) shared with kobodash's own watchdog: 3 a day
 # between them. reboots_kept prints the ones from the last 24 h.
 BUDGET=$W/watchdog-reboots
+# card reads and writes for it are bounded: the rescue must never hang on a stuck card
 reboots_kept() {
 	now=$(date +%s)
-	for t in $(cat "$BUDGET" 2>/dev/null); do
+	rm -f /tmp/kobodash.budget
+	budget_ok=1
+	if [ -e "$BUDGET" ]; then
+		bounded 5 sh -c 'cat "$1" >/tmp/kobodash.budget.part && mv /tmp/kobodash.budget.part /tmp/kobodash.budget' sh "$BUDGET"
+		[ -f /tmp/kobodash.budget ] || budget_ok=0 # unreadable: unknown, so no reboot
+	fi
+	for t in $(cat /tmp/kobodash.budget 2>/dev/null); do
 		case $t in '' | *[!0-9]*) continue ;; esac
 		d=$((now - t))
 		[ $d -lt 86400 ] && [ $d -gt -86400 ] && echo "$t"
@@ -152,9 +163,15 @@ rescue() { # rescue REASON PID
 		fi
 	done
 	connect_stop
-	kept=$(reboots_kept)
-	if [ "$(echo "$kept" | grep -c .)" -lt $RESCUE_MAX ]; then
-		if { echo "$kept"; date +%s; } | grep . >"$BUDGET.tmp" && mv "$BUDGET.tmp" "$BUDGET"; then
+	reboots_kept >/tmp/kobodash.kept
+	kept=$(cat /tmp/kobodash.kept)
+	if [ $budget_ok -eq 0 ]; then
+		say "rescue: over, can't read the reboot budget: not rebooting"
+	elif [ "$(echo "$kept" | grep -c .)" -lt $RESCUE_MAX ]; then
+		{ echo "$kept"; date +%s; } | grep . >/tmp/kobodash.budget.new
+		rm -f /tmp/kobodash.budget.ok
+		bounded 5 sh -c 'cp "$1" "$2.tmp" && mv "$2.tmp" "$2" && touch /tmp/kobodash.budget.ok' sh /tmp/kobodash.budget.new "$BUDGET"
+		if [ -f /tmp/kobodash.budget.ok ]; then
 			say "rescue: over, rebooting"
 			sync &
 			sleep 5

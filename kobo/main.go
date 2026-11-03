@@ -56,7 +56,6 @@ type Config struct {
 	WarnSet       bool   // WARN_REGION in the conf: keep it even if the location says otherwise
 	UpdateRepo    string // GitHub owner/repo whose signed releases it installs ("" = off)
 	UpdatePubKey  string // hex ed25519 public key that release binaries must verify against
-	UpdateHours   int
 	UpdateAPI     string // GitHub API base (tests point it at a local server)
 	TgToken       string // Telegram bot token for low-battery alerts ("" = off)
 	TgChat        string // chat id the alert goes to
@@ -89,7 +88,6 @@ func loadConfig(path string) Config {
 		WarnRegion:    "Västra Götaland",
 		UpdateRepo:    "tbelbek/kobo-mini-n705-dashboard",
 		UpdatePubKey:  releasePubKey,
-		UpdateHours:   0, // 0 = every timed refresh: one GitHub API call while Wi-Fi is already up
 		UpdateAPI:     "https://api.github.com",
 	}
 	f, err := os.Open(path)
@@ -171,8 +169,6 @@ func loadConfig(path string) Config {
 			c.UpdatePubKey = v
 		case "UPDATE_API":
 			c.UpdateAPI = v
-		case "UPDATE_HOURS":
-			c.UpdateHours = int(num)
 		case "WARN_REGION":
 			c.WarnRegion, c.WarnSet = v, true
 		case "TELEGRAM_TOKEN":
@@ -187,17 +183,14 @@ func loadConfig(path string) Config {
 			c.BattAlert = int(num)
 		}
 	}
-	for _, p := range []struct {
-		p   Place
-		set bool
-	}{{p2, set2}, {p1, set1}} {
-		if p.set {
-			if p.p.TZ == "" {
-				p.p.TZ = c.TZ
-			}
-			c.Place, c.PlaceSet = p.p, true
-			break
+	if set2 {
+		p1, set1 = p2, true
+	}
+	if set1 {
+		if p1.TZ == "" {
+			p1.TZ = c.TZ
 		}
+		c.Place, c.PlaceSet = p1, true
 	}
 	return c
 }
@@ -273,10 +266,9 @@ func (a *App) toggleWifi() {
 	}
 }
 
-// onDevice: InkBox's Wi-Fi scripts exist only on the Kobo (desk renders skip the radio dance).
-func onDevice() bool { return isDevice() }
-
-var isDevice = sync.OnceValue(func() bool { // asked on every beat: look once
+// onDevice: InkBox's Wi-Fi scripts exist only on the Kobo (desk renders skip the radio
+// dance). Asked on every beat: looked up once.
+var onDevice = sync.OnceValue(func() bool {
 	_, err := os.Stat("/usr/local/bin/wifi/toggle.sh")
 	return err == nil
 })
@@ -413,8 +405,7 @@ func stateFile(name string) string {
 }
 
 // reconnectWifi re-runs InkBox's own Wi-Fi scripts in the background, like run.sh does at boot:
-// connect even when toggle.sh on reports a failure (its status is wlarm_le up's). They refuse
-// to run twice, so overlapping calls are harmless.
+// connect even when toggle.sh on reports a failure (its status is wlarm_le up's).
 // Wi-Fi operations one at a time. The connect script runs in its own process group so a
 // stale one can be killed whole: left alone it waits up to 320 s for DHCP and then runs
 // toggle.sh off, which would cut down a later, working connection.
@@ -504,26 +495,21 @@ func reconnectWifi() {
 // openWifiLog rotates wifi.log, opens it and writes the connect header, all of it given up
 // after 5 s (nil: connect without a log).
 func openWifiLog(t0 time.Time) *os.File {
-	done := make(chan *os.File, 1)
-	go func() {
+	done := make(chan *os.File, 1) // buffered: a late open after the timeout still finishes
+	if !within(5*time.Second, func() {
 		wl := stateFile("wifi.log")
 		if st, err := os.Stat(wl); err == nil && st.Size() > 256<<10 {
 			os.Rename(wl, wl+".old")
 		}
 		f, err := os.OpenFile(wl, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			done <- nil
-			return
+		if err == nil {
+			fmt.Fprintf(f, "== %s connect\n", t0.UTC().Format("2006-01-02 15:04:05"))
 		}
-		fmt.Fprintf(f, "== %s connect\n", t0.UTC().Format("2006-01-02 15:04:05"))
 		done <- f
-	}()
-	select {
-	case f := <-done:
-		return f
-	case <-time.After(5 * time.Second):
+	}) {
 		return nil
 	}
+	return <-done
 }
 
 // stamped prefixes every line written through it with the seconds since t0. It never reports
@@ -649,32 +635,20 @@ func sshActive() bool {
 
 const cpufreq = "/sys/devices/system/cpu/cpu0/cpufreq/"
 
-// ensureScaling: InkBox leaves the CPU pinned at 800 MHz ("userspace"). Scale with
-// load instead: ondemand if the kernel has it, else conservative (the Mini's
-// 2.6.35 kernel only offers conservative/powersave/userspace/performance).
+// ensureScaling: InkBox leaves the CPU pinned at 800 MHz ("userspace"). Scale with load
+// instead: conservative, the best the Mini's 2.6.35 kernel has (no ondemand); measured
+// 3 Nov: half the awake time at 160 MHz, a fifth at 800.
 func ensureScaling() {
-	avail, err := os.ReadFile(cpufreq + "scaling_available_governors")
+	const want = "conservative"
+	cur, err := os.ReadFile(cpufreq + "scaling_governor")
 	if err != nil {
-		return
+		return // not on the device
 	}
-	want := "conservative"
-	if strings.Contains(string(avail), "ondemand") {
-		want = "ondemand"
-	}
-	if cur, _ := os.ReadFile(cpufreq + "scaling_governor"); strings.TrimSpace(string(cur)) != want {
+	if strings.TrimSpace(string(cur)) != want {
 		if err := os.WriteFile(cpufreq+"scaling_governor", []byte(want), 0644); err != nil {
 			log.Printf("governor: %v", err)
 		}
 	}
-}
-
-func firstErr(errs ...error) error {
-	for _, e := range errs {
-		if e != nil {
-			return e
-		}
-	}
-	return nil
 }
 
 const framePath = "/tmp/kobodash.png"
@@ -878,12 +852,7 @@ func main() {
 	tick := time.NewTicker(10 * time.Second)
 	lastTouch, lastTry, resumed := time.Now(), time.Now(), time.Time{}
 	lastBeat := time.Now()
-	var lastUpdateCheck time.Time
-	maybeUpdate := func() { // only right after a refresh, while Wi-Fi is up
-		if time.Now().Round(0).Sub(lastUpdateCheck) < time.Duration(cfg.UpdateHours)*time.Hour {
-			return
-		}
-		lastUpdateCheck = time.Now().Round(0)
+	maybeUpdate := func() { // right after a refresh, while Wi-Fi is up: one GitHub call, a 304 when nothing is new
 		if a.checkUpdate() {
 			os.Exit(0) // run.sh starts the new binary
 		}
@@ -924,8 +893,8 @@ func main() {
 			if !online() && !a.skipWake {
 				reconnectWifi() // a touch opens a Wi-Fi window (ssh, refresh) without blocking the UI
 			}
-			if a.wantUpdate { // refresh button: don't wait for the 6-hour update check
-				a.wantUpdate, lastUpdateCheck = false, time.Time{}
+			if a.wantUpdate { // refresh button: don't wait for the next timed wake
+				a.wantUpdate = false
 				maybeUpdate()
 			}
 		case <-tick.C:
@@ -1065,7 +1034,7 @@ func (a *App) sleepUntil(due time.Time) string {
 	}
 	due = time.Now().Round(0).Add(d) // what the alarm is really set for: wake classification and the screen use it
 	a.nextWake = due
-	if _, err := setWakeAlarm(d); err != nil {
+	if err := setWakeAlarm(d); err != nil {
 		log.Printf("alarm: %v", err) // never suspend without a way back
 		awakeAfterFailedSleep()
 		return "error"
@@ -1076,7 +1045,7 @@ func (a *App) sleepUntil(due time.Time) string {
 		// how long the kernel tried tells the cause apart: ~22 s (2 s settle + 20 s) = the freezer
 		// gave up on a task, ~2 s = a lock or a driver; the kernel log names the task or driver
 		log.Printf("suspend: %v after %v", err, time.Now().Round(0).Sub(start).Round(100*time.Millisecond))
-		kernelLog("suspend-fail.log", 300)
+		kernelLog()
 		awakeAfterFailedSleep()
 		return "error"
 	}
@@ -1100,8 +1069,9 @@ func awakeAfterFailedSleep() {
 	noteSuspend(false)
 }
 
-// kernelLog appends the tail of the kernel log to a card file (kept small).
-func kernelLog(name string, lines int) {
+// kernelLog appends the kernel log's last 300 lines to suspend-fail.log on the card (kept small).
+func kernelLog() {
+	const lines = 300
 	out, err := exec.Command("dmesg").Output()
 	if err != nil {
 		log.Printf("dmesg: %v", err)
@@ -1111,7 +1081,7 @@ func kernelLog(name string, lines int) {
 	if len(l) > lines {
 		l = l[len(l)-lines:]
 	}
-	p := stateFile(name)
+	p := stateFile("suspend-fail.log")
 	if st, err := os.Stat(p); err == nil && st.Size() > 128<<10 {
 		os.Rename(p, p+".old")
 	}

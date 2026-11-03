@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build, sign and publish a kobodash release. Devices running a release build pick
-# it up on their next update check (every UPDATE_HOURS) and verify the signature
+# it up on their next timed wake (within REFRESH_MIN) and verify the signature
 # against the public key compiled into them before installing.
 #
 # Usage: tools/release.sh v0.2.0

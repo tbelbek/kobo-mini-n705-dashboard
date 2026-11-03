@@ -19,7 +19,6 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/gomedium"
-	"golang.org/x/image/font/gofont/gomediumitalic"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
@@ -47,7 +46,6 @@ var gridDays = []string{"Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"}
 var (
 	fontReg, _  = opentype.Parse(gomedium.TTF) // Medium, not Regular: thin strokes look faint on e-ink; Go fonts cover WGL4 (ş/ğ/İ/ı)
 	fontBold, _ = opentype.Parse(gobold.TTF)
-	fontItal, _ = opentype.Parse(gomediumitalic.TTF)
 	faceCache   = map[string]font.Face{}
 )
 

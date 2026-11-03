@@ -9,6 +9,7 @@ package main
 // one as kobodash.prev, exit; run.sh restarts it and rolls back if it dies quickly.
 
 import (
+	"cmp"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -74,7 +76,7 @@ func (a *App) checkUpdate() bool {
 	}
 	bin, err1 := get(urls["kobodash-armv7"])
 	sig, err2 := get(urls["kobodash-armv7.sig"])
-	if err := firstErr(err1, err2); err != nil {
+	if err := cmp.Or(err1, err2); err != nil {
 		log.Printf("update %s: download: %v", rel.Tag, err)
 		return false
 	}
@@ -226,22 +228,13 @@ func newer(tag, cur string) bool {
 	}
 	a, ok1 := parse(tag)
 	b, ok2 := parse(cur)
-	if !ok1 || !ok2 {
-		return true
+	for len(a) < len(b) { // v1 == v1.0
+		a = append(a, 0)
 	}
-	for i := 0; i < len(a) || i < len(b); i++ {
-		var x, y int
-		if i < len(a) {
-			x = a[i]
-		}
-		if i < len(b) {
-			y = b[i]
-		}
-		if x != y {
-			return x > y
-		}
+	for len(b) < len(a) {
+		b = append(b, 0)
 	}
-	return false
+	return !ok1 || !ok2 || slices.Compare(a, b) > 0
 }
 
 // ensureP3 mounts partition 3 (the unionfs write branch) at /tmp/p3 if needed.

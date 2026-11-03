@@ -41,33 +41,33 @@ func encodeRTC(b []byte, t time.Time) {
 	}
 }
 
-// setWakeAlarm arms the RTC alarm d from now and returns the alarm read back.
-func setWakeAlarm(d time.Duration) (time.Time, error) {
+// setWakeAlarm arms the RTC alarm d from now and checks that it reads back enabled.
+func setWakeAlarm(d time.Duration) error {
 	f, err := os.Open("/dev/rtc0")
 	if err != nil {
-		return time.Time{}, err
+		return err
 	}
 	defer f.Close()
 	now := make([]byte, 36)
 	if err := ioctl(f.Fd(), rtcRdTime, now); err != nil {
-		return time.Time{}, fmt.Errorf("RTC_RD_TIME: %w", err)
+		return fmt.Errorf("RTC_RD_TIME: %w", err)
 	}
 	wk := make([]byte, 40) // u8 enabled, u8 pending, 2 pad, struct rtc_time
 	wk[0] = 1
 	encodeRTC(wk[4:], decodeRTC(now).Add(d))
 	if err := ioctl(f.Fd(), rtcWkalmSet, wk); err != nil {
-		return time.Time{}, fmt.Errorf("RTC_WKALM_SET: %w", err)
+		return fmt.Errorf("RTC_WKALM_SET: %w", err)
 	}
 	back := make([]byte, 40)
 	if err := ioctl(f.Fd(), rtcWkalmRd, back); err != nil {
-		return time.Time{}, fmt.Errorf("RTC_WKALM_RD: %w", err)
+		return fmt.Errorf("RTC_WKALM_RD: %w", err)
 	}
 	// only "enabled" can be checked: the Mini's MSP430 driver takes the alarm as seconds
 	// from now and reads it back as 1970-01-01 00:00:01, so the time read back means nothing
 	if back[0] == 0 {
-		return decodeRTC(back[4:]), fmt.Errorf("alarm not enabled after set")
+		return fmt.Errorf("alarm not enabled after set")
 	}
-	return decodeRTC(back[4:]), nil
+	return nil
 }
 
 // suspend: Kobo sequence (Nickel/KOReader): state-extended=1, settle, mem; blocks until resume.
@@ -83,15 +83,14 @@ func suspend() error {
 
 func suspendTest(sec int) {
 	log.SetOutput(os.Stdout)
-	alarm, err := setWakeAlarm(time.Duration(sec) * time.Second)
-	if err != nil {
-		log.Printf("alarm: %v (read back %v)", err, alarm)
+	if err := setWakeAlarm(time.Duration(sec) * time.Second); err != nil {
+		log.Printf("alarm: %v", err)
 		return
 	}
-	log.Printf("alarm armed for %v UTC (in %ds); Wi-Fi off, suspending", alarm.Format("15:04:05"), sec)
+	log.Printf("alarm armed (in %ds); Wi-Fi off, suspending", sec)
 	wifiDown()
 	start := time.Now().Round(0) // wall clock: monotonic time stops during suspend
-	err = suspend()
+	err := suspend()
 	slept := time.Now().Round(0).Sub(start)
 	log.Printf("resumed after %v (suspend err: %v) — woke by itself if this is ~%ds", slept.Round(time.Second), err, sec)
 	reconnectWifi()

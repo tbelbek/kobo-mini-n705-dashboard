@@ -9,6 +9,16 @@ What to do when the dashboard misbehaves, and how to work on a device you can't 
 3. **Boot scripts last.** `run.sh` and `supervise.sh` are the only things that can make the device unrecoverable. Change them only with `image/test-supervise.sh` passing and `sh -n` checked on the device (see below), never as part of another change.
 4. **Ship small.** One change per release, `go test ./kobo` green, then watch one timed wake in the log before the next.
 
+## Daily report
+
+With `TELEGRAM_LOG_THREAD` set, the first refresh with network after the quiet hours (06:00) sends one line counting the last 24 h of the card log:
+
+```
+✓ Kobo 24 sa · zamanlı uyanış 9/9 · tuş 1 · ağsız 0 · uyku hatası 0 · bekçi 0 · kurtarma 0 · yeniden başlama 0 · Wi-Fi ort. 8.3 sn · gece 8h uykuda %4 (0.50 %/sa)
+```
+
+`⚠` instead of `✓` means a timed wake was missed or something had to step in (no network, failed suspend, watchdog, rescue). Seven `✓` days in a row with the night drain recorded is the bar for calling a release stable. A missing report is itself a finding: the 06:00 and 08:00 wakes both got nowhere.
+
 ## Symptoms
 
 | You see | Likely | Look at |

@@ -347,6 +347,9 @@ func (a *App) refresh() {
 		a.forceCal = false
 	}
 	a.updated = time.Now().Round(0)
+	if onDevice() && gotAnswer.Load() {
+		a.maybeDailyReport()
+	}
 }
 
 // relocate: unless the conf names a place, look the city up from the IP once a day.

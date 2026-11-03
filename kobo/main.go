@@ -757,12 +757,12 @@ fast() {
 	echo "fast: link up"
 	$W status 2>/dev/null | sed -n 's/^freq=//p' > $F.tmp && mv $F.tmp $F
 	timeout 20 udhcpc -i $I -n -t 10 -T 1 || { echo "fast: no lease"; return 1; }
-	/usr/local/bin/timesync.sh
+	timeout 30 /usr/local/bin/timesync.sh
 }
 fast || {
 	echo "fast connect failed, InkBox's script"
 	rm -f $F; killall -q udhcpc wpa_supplicant 2>/dev/null
-	n=0; while pidof wpa_supplicant >/dev/null && [ $n -lt 30 ]; do usleep 100000; n=$((n+1)); done
+	n=0; while killall -q -0 wpa_supplicant 2>/dev/null && [ $n -lt 30 ]; do usleep 100000; n=$((n+1)); done
 	/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"
 }`
 

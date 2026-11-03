@@ -704,6 +704,39 @@ func wifiDown() {
 	noteLeftBehind("toggle.sh") // after wifiMu is released: healing takes it again
 }
 
+// waitAlone returns once no other healthy kobodash runs. On 3 Nov two ran at once (a second
+// supervise.sh had started a second one) and fought over Wi-Fi, the update install and the
+// test counter. Of two that start together the lower pid runs. One stuck in the kernel or a
+// zombie doesn't count: supervise.sh starts a new one exactly when the old one won't die.
+func waitAlone() {
+	for logged := false; ; logged = true {
+		other := olderKobodash(os.Getpid())
+		if other == 0 {
+			return
+		}
+		if !logged {
+			log.Printf("kobodash %d is already running: waiting for it to go", other)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// olderKobodash: the pid of an older kobodash that is running or asleep (not stuck in the
+// kernel, stopped or dead), or 0.
+func olderKobodash(me int) int {
+	dirs, _ := os.ReadDir("/proc")
+	for _, d := range dirs {
+		pid, err := strconv.Atoi(d.Name())
+		if err != nil || pid >= me || strings.TrimSpace(readProc("/proc/"+d.Name()+"/comm")) != "kobodash" {
+			continue
+		}
+		if s := taskState(readProc("/proc/" + d.Name() + "/stat")); s == 'S' || s == 'R' {
+			return pid
+		}
+	}
+	return 0
+}
+
 // stuckInDriver: an rmmod waiting in the kernel. The N705's dhd can deadlock on unload (the
 // 3 Nov hang: rmmod in kthread_stop for the SDIO interrupt thread, that thread in down(),
 // dhd_watchdog in __mmc_claim_host), and a task stuck so never wakes: Wi-Fi can't come
@@ -1098,6 +1131,9 @@ func main() {
 		log.SetOutput(io.MultiWriter(os.Stderr, cardLog("/tmp/p3/rootfs/write/opt/kobodash/kobodash.log")))
 	}
 	log.Printf("kobodash %s starting", version)
+	if onDevice() {
+		waitAlone()
+	}
 	if onDevice() && *wdTest {
 		startWatchdog(2 * time.Minute)
 		log.Printf("watchdog test: main loop hangs now")

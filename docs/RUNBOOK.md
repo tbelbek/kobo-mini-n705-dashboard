@@ -81,13 +81,19 @@ In `wifi.log`, each line is stamped `+ 2.31s` from the start of the connect: the
 
 ## Back to normal
 
+Look for the process, not the pid file: right after boot (and the card mounts a minute or so in) the file isn't there yet while supervise already runs, and a second supervise means a second kobodash. On 3 Nov exactly that had two of them fighting over Wi-Fi and the update. kobodash now waits while an older healthy one runs, but don't start a second supervise.
+
 ```bash
-ssh $DEV 'W=/tmp/p3/rootfs/write/opt/kobodash
-  kill -0 $(cat /run/kobodash-supervise.pid) 2>/dev/null && echo "supervise running" || {
+ssh $DEV 'up=$(cut -d. -f1 /proc/uptime); n=0
+  for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = supervise.sh ] && n=$((n+1)) && echo "supervise ${p#/proc/}"; done
+  if [ $n -eq 0 ] && [ $up -gt 180 ]; then
     killall kobodash; sleep 2
     nohup /bin/sh /opt/kobodash/supervise.sh >/dev/null 2>&1 </dev/null &
-    sleep 3; echo restarted; }'
+    sleep 3; echo restarted
+  fi'
 ```
+
+Two `supervise` lines: kill the newer one (higher pid) and the kobodash it started.
 
 On the device itself: a short power-button press wakes it; if it doesn't react within a minute, hold the button to reboot. Both bring it up under supervise.
 

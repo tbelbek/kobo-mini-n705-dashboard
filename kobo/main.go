@@ -1103,8 +1103,12 @@ func main() {
 		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !a.sshHold() && !holdAwake.Load() {
 			sleepNow = false
 			woke := a.sleepUntil(a.nextSlot(a.updated))
-			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu"}[woke]
+			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu", "usb": "şarj kablosu"}[woke]
 			resumed = time.Now()
+			if woke == "usb" { // the charger, not a person: straight back to the same slot
+				lastTouch = time.Time{}
+				continue
+			}
 			if woke == "timer" {
 				// lastTouch from before the sleep still looks recent (monotonic time stopped while
 				// asleep): forget it, or a tap just before a press-to-sleep keeps this wake up 2 min
@@ -1238,6 +1242,7 @@ func (a *App) sleepUntil(due time.Time) string {
 	if fbinkNoWait { // the panel wasn't waited for: give it Kobo's full 2 s to finish the frame
 		settle = max(settle, 2*time.Second)
 	}
+	key0, usb0 := wakeIRQs(readProc("/proc/interrupts"))
 	if err := suspend(settle, pressed); err == errStayAwake {
 		log.Printf("sleep: power button pressed on the way down, staying awake")
 		reconnectWifi()
@@ -1260,12 +1265,47 @@ func (a *App) sleepUntil(due time.Time) string {
 		a.settle = 2 * time.Second // a short settle and an instant wake: the kernel wasn't ready; Kobo's 2 s from now on
 		log.Printf("suspend: woke after %v with a %v settle, back to 2 s", slept.Round(time.Second), settle)
 	}
-	woke := "button"
-	if time.Now().Round(0).After(due.Add(-15 * time.Second)) { // the alarm fires within 1-2 s (logs); a press just before it is a button wake
-		woke = "timer"
-	}
+	key1, usb1 := wakeIRQs(readProc("/proc/interrupts"))
+	woke := wokeBy(time.Now().Round(0).After(due.Add(-15*time.Second)), key0, usb0, key1, usb1)
 	log.Printf("woke: %s after %v %s", woke, time.Now().Round(0).Sub(start).Round(time.Second), battery())
 	return woke
+}
+
+// wakeIRQs sums /proc/interrupts by what can wake the Mini: the power key, and the charger
+// or USB (acin_pg, usb_wakeup). The interrupt that woke it is counted after resume.
+func wakeIRQs(table string) (key, usb int64) {
+	for _, l := range strings.Split(table, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 3 || !strings.HasSuffix(f[0], ":") {
+			continue
+		}
+		n, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		switch name := strings.Join(f[2:], " "); {
+		case strings.Contains(name, "power_key"), strings.Contains(name, "mxckpd"):
+			key += n
+		case strings.Contains(name, "acin_pg"), strings.Contains(name, "usb_wakeup"):
+			usb += n
+		}
+	}
+	return
+}
+
+// wokeBy: "timer" at the alarm (it fires within 1-2 s, per the logs), "usb" when only the
+// charger or USB moved: the Mini's loose micro-USB socket wakes it with plug/unplug events
+// that used to pass for button presses and kept it up 2 min with Wi-Fi each; "button" else.
+func wokeBy(atAlarm bool, key0, usb0, key1, usb1 int64) string {
+	switch {
+	case atAlarm:
+		return "timer"
+	case key1 > key0:
+		return "button"
+	case usb1 > usb0:
+		return "usb"
+	}
+	return "button" // can't tell: stay up for a person rather than ignore one
 }
 
 // maxSleep: the longest single sleep. Quiet hours 23-06 plus the slot after need 9 h.

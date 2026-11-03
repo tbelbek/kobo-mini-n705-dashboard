@@ -27,7 +27,7 @@ var (
 // dailyReport counts the log lines of the 24 h before now. expected is the number of timed
 // wakes due in that window.
 func dailyReport(text string, now time.Time, expected int) string {
-	var timer, button, nonet, susp, wd, rescue, starts, upd int
+	var timer, button, usb, nonet, susp, wd, rescue, starts, upd int
 	var wifi []float64
 	lastSleepPct, nightFrom, nightTo := -1, 0, 0
 	var night time.Duration
@@ -46,10 +46,13 @@ func dailyReport(text string, now time.Time, expected int) string {
 			pct, _ = strconv.Atoi(p[1])
 		}
 		switch {
-		case strings.HasPrefix(msg, "woke: timer"), strings.HasPrefix(msg, "woke: button"):
-			if strings.HasPrefix(msg, "woke: timer") {
+		case strings.HasPrefix(msg, "woke: "):
+			switch {
+			case strings.HasPrefix(msg, "woke: timer"):
 				timer++
-			} else {
+			case strings.HasPrefix(msg, "woke: usb"):
+				usb++
+			default:
 				button++
 			}
 			if a := logAfter.FindStringSubmatch(msg); a != nil && pct >= 0 && lastSleepPct >= 0 {
@@ -90,6 +93,9 @@ func dailyReport(text string, now time.Time, expected int) string {
 	}
 	s := fmt.Sprintf("%s Kobo 24 sa · zamanlı uyanış %d/%d · tuş %d · ağsız %d · uyku hatası %d · bekçi %d · kurtarma %d · yeniden başlama %d",
 		ok, timer, expected, button, nonet, susp, wd, rescue, starts)
+	if usb > 0 {
+		s += fmt.Sprintf(" · şarj kablosu %d", usb) // a loose socket shows up here
+	}
 	if upd > 0 {
 		s += fmt.Sprintf(" · güncelleme %d", upd)
 	}

@@ -15,6 +15,7 @@ func TestDailyReport(t *testing.T) {
 		"2026/11/03 20:00:14 wifi: up in 8.4s",
 		"2026/11/03 20:00:30 sleep: alarm in 1h59m30s (next update 22:00:00) pil %80",
 		"2026/11/03 21:10:00 woke: button after 1h9m30s pil %80",
+		"2026/11/03 21:30:00 woke: usb after 15m0s pil %80",
 		"2026/11/03 21:12:00 suspend: write /sys/power/state: device or resource busy after 22s",
 		"2026/11/03 22:00:05 woke: timer after 48m0s pil %79",
 		"2026/11/03 22:00:12 wifi: up in 7.2s",
@@ -26,7 +27,7 @@ func TestDailyReport(t *testing.T) {
 		"2026/11/04 06:00:20 kobodash v0.7.33 starting",
 	}
 	got := dailyReport(strings.Join(lines, "\n"), now, 9)
-	for _, want := range []string{"⚠", "zamanlı uyanış 3/9", "tuş 1", "uyku hatası 1", "kurtarma 1", "yeniden başlama 1", "Wi-Fi ort. 8.4 sn", "gece 8h0m0s uykuda %4 (0.50 %/sa)"} {
+	for _, want := range []string{"⚠", "zamanlı uyanış 3/9", "tuş 1", "şarj kablosu 1", "uyku hatası 1", "kurtarma 1", "yeniden başlama 1", "Wi-Fi ort. 8.4 sn", "gece 8h0m0s uykuda %4 (0.50 %/sa)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)
 		}

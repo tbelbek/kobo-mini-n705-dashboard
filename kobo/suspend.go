@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -70,12 +71,20 @@ func setWakeAlarm(d time.Duration) error {
 	return nil
 }
 
+// errStayAwake: suspend was called off at the last moment (abort said so).
+var errStayAwake = errors.New("called off")
+
 // suspend: Kobo sequence (Nickel/KOReader): state-extended=1, settle, mem; blocks until resume.
-func suspend() error {
+// abort is asked after the settle, the last moment to call it off (a power press).
+func suspend(abort func() bool) error {
 	if err := os.WriteFile("/sys/power/state-extended", []byte("1"), 0644); err != nil {
 		return err
 	}
 	time.Sleep(2 * time.Second)
+	if abort != nil && abort() {
+		os.WriteFile("/sys/power/state-extended", []byte("0"), 0644)
+		return errStayAwake
+	}
 	err := os.WriteFile("/sys/power/state", []byte("mem"), 0644)
 	os.WriteFile("/sys/power/state-extended", []byte("0"), 0644)
 	return err
@@ -90,7 +99,7 @@ func suspendTest(sec int) {
 	log.Printf("alarm armed (in %ds); Wi-Fi off, suspending", sec)
 	wifiDown()
 	start := time.Now().Round(0) // wall clock: monotonic time stops during suspend
-	err := suspend()
+	err := suspend(nil)
 	slept := time.Now().Round(0).Sub(start)
 	log.Printf("resumed after %v (suspend err: %v) — woke by itself if this is ~%ds", slept.Round(time.Second), err, sec)
 	reconnectWifi()

@@ -42,3 +42,13 @@ func TestExpectedWakes(t *testing.T) {
 		t.Errorf("expected wakes = %d, want 9", n)
 	}
 }
+
+// Quiet hours ending off the grid: their end is the wake (07:00 with 23-7 and a 2 h grid).
+func TestExpectedWakesQuietOffGrid(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	a := &App{loc: loc, cfg: Config{QuietFrom: 23, QuietTo: 7, RefreshMin: 120}}
+	now := time.Date(2026, 11, 4, 7, 0, 30, 0, loc)
+	if n := a.expectedWakes(now.Add(-24*time.Hour), now); n != 9 { // 08 10 12 14 16 18 20 22 + 07
+		t.Errorf("expected wakes = %d, want 9", n)
+	}
+}

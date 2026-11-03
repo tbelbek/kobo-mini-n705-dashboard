@@ -69,6 +69,7 @@ func dailyReport(text string, now time.Time, expected int) string {
 			rescue++
 		case strings.HasPrefix(msg, "kobodash ") && strings.HasSuffix(msg, " starting"):
 			starts++
+			lastSleepPct = -1 // a sleep logged before a restart isn't the one the next wake ends
 		case strings.HasPrefix(msg, "update: ") && strings.Contains(msg, " installed"):
 			upd++
 		default:
@@ -107,27 +108,20 @@ func dailyReport(text string, now time.Time, expected int) string {
 	return s
 }
 
-// expectedWakes: timed wakes due in (from, to], on the clock grid and outside quiet hours
-// (the wake at the end of the quiet hours counts).
+// expectedWakes: timed wakes due in (from, to]: the grid slots, moved by wakeAt the way the
+// alarm is (a slot in the quiet hours becomes their end, which need not be on the grid).
 func (a *App) expectedWakes(from, to time.Time) int {
-	n := 0
-	for s := a.nextSlotRaw(from); !s.After(to); s = a.nextSlotRaw(s) {
-		n++
-	}
-	return n
-}
-
-// nextSlotRaw: the next grid time after t that is a wake (quiet hours skipped, their end kept).
-func (a *App) nextSlotRaw(t time.Time) time.Time {
-	l := t.In(a.loc)
+	seen := map[time.Time]bool{}
+	l := from.In(a.loc)
 	for day := 0; day < 3; day++ {
 		for m := 0; m < 24*60; m += a.cfg.RefreshMin {
-			if s := time.Date(l.Year(), l.Month(), l.Day()+day, 0, m, 0, 0, a.loc); s.After(t) && a.wakeAt(s).Equal(s) {
-				return s
+			w := a.wakeAt(time.Date(l.Year(), l.Month(), l.Day()+day, 0, m, 0, 0, a.loc))
+			if w.After(from) && !w.After(to) {
+				seen[w] = true
 			}
 		}
 	}
-	return t.Add(24 * time.Hour)
+	return len(seen)
 }
 
 // maybeDailyReport sends the report once a day, on the first refresh with network after the
@@ -142,16 +136,23 @@ func (a *App) maybeDailyReport() {
 		return // no quiet hours to anchor the day on, inside them, or before their end
 	}
 	day := l.Format("2006-01-02")
-	if strings.TrimSpace(readString(stateFile("daily"))) == day {
+	if a.reported == day {
 		return
 	}
-	text := readString(cardLogPath)
+	if sent, ok := readState(stateFile("daily")); !ok || strings.TrimSpace(sent) == day {
+		return // sent today, or can't tell: better one missing report than one per wake
+	}
+	old, _ := readState(cardLogPath + ".old") // a rotation just before the report leaves most of the day there
+	text, _ := readState(cardLogPath)
 	if text == "" {
 		return
 	}
-	msg := dailyReport(text, now, a.expectedWakes(now.Add(-24*time.Hour), now))
+	msg := dailyReport(old+text, now, a.expectedWakes(now.Add(-24*time.Hour), now))
 	if a.telegram(a.cfg.TgLogThread, msg, true) {
-		writeAtomic(stateFile("daily"), day)
+		a.reported = day // even if the card won't take the marker
+		if err := writeAtomic(stateFile("daily"), day); err != nil {
+			log.Printf("report: marker: %v", err)
+		}
 		log.Printf("report: %s", msg)
 	}
 }

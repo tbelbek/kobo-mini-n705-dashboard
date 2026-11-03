@@ -243,6 +243,7 @@ type App struct {
 	keys        chan struct{} // power-button presses
 	sshSince    time.Time     // first seen the current ssh session (monotonic: awake time)
 	sshExpired  bool
+	reported    string    // day of the last daily report sent by this process
 	weatherAt   time.Time // last successful weather fetch
 
 }
@@ -1166,20 +1167,25 @@ func (a *App) sleepUntil(due time.Time) string {
 		awakeAfterFailedSleep()
 		return "error"
 	}
-	select { // pressed on the way down: someone wants it awake
-	case <-a.keys:
-		log.Printf("sleep: power button pressed on the way down, staying awake")
-		reconnectWifi()
-		return "button"
-	default:
-	}
 	wifiMu.Lock()
 	killConnect() // a connect the watchdog started on the way down must not resume half-done
 	wifiMu.Unlock()
 	httpClient.CloseIdleConnections() // the router forgets them while we sleep; reusing one stalls for 25 s
 	log.Printf("sleep: alarm in %v (next update %s) %s", d.Round(time.Second), due.In(a.loc).Format("15:04:05"), battery())
 	start := time.Now().Round(0) // wall clock; monotonic time stops in suspend
-	if err := suspend(); err != nil {
+	pressed := func() bool {     // pressed on the way down, up to the last moment: someone wants it awake
+		select {
+		case <-a.keys:
+			return true
+		default:
+			return false
+		}
+	}
+	if err := suspend(pressed); err == errStayAwake {
+		log.Printf("sleep: power button pressed on the way down, staying awake")
+		reconnectWifi()
+		return "button"
+	} else if err != nil {
 		// how long the kernel tried tells the cause apart: ~22 s (2 s settle + 20 s) = the freezer
 		// gave up on a task, ~2 s = a lock or a driver; the kernel log names the task or driver
 		log.Printf("suspend: %v after %v", err, time.Now().Round(0).Sub(start).Round(100*time.Millisecond))

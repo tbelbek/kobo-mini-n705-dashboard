@@ -102,6 +102,8 @@ WIFI_IDLE_MIN=1
 QUIET=off
 ```
 
+To try a shorter suspend settle, add `SUSPEND_SETTLE_MS=500` too, and look for `suspend: back to a 2 s settle` in the log: it means the short wait failed on this reader (keep 2000).
+
 A 3-minute loop shows a dozen wakes in under an hour. Count them:
 
 ```bash

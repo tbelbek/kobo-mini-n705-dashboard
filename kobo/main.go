@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,7 @@ type Config struct {
 	WifiAlways    bool // never switch the radio off (debugging)
 	Sleep         bool // suspend between refreshes (RTC alarm wakes it, so does the power button)
 	AwakeSec      int  // stay awake this long after the last touch / power-button wake
+	SettleMs      int  // wait between state-extended and mem (Kobo's sequence used 2000)
 	QuietFrom     int  // no timed wakes from this hour...
 	QuietTo       int  // ...until this one (local); equal = no quiet hours
 	KeyInput      string
@@ -83,7 +85,8 @@ func loadConfig(path string) Config {
 		WifiIdleMin:   10,
 		Sleep:         true,
 		AwakeSec:      120,
-		QuietFrom:     23, // nobody reads the fridge at night: each skipped wake saves a Wi-Fi association
+		SettleMs:      2000, // Kobo's and KOReader's value; KOReader notes shorter misbehaved. Try less on a device you can reach
+		QuietFrom:     23,   // nobody reads the fridge at night: each skipped wake saves a Wi-Fi association
 		QuietTo:       6,
 		KeyInput:      "/dev/input/event0",
 		WarnRegion:    "Västra Götaland",
@@ -156,6 +159,10 @@ func loadConfig(path string) Config {
 			c.Sleep = b
 		case "AWAKE_SEC":
 			c.AwakeSec = int(num)
+		case "SUSPEND_SETTLE_MS": // back to 2000 here if short settles turn out to fail on a device
+			if num >= 0 && num <= 10000 {
+				c.SettleMs = int(num)
+			}
 		case "QUIET": // "23-6", or "off"
 			c.QuietFrom, c.QuietTo = 0, 0
 			if f, t, ok := strings.Cut(v, "-"); ok {
@@ -238,6 +245,8 @@ type App struct {
 	skipWake    bool          // this tap switched Wi-Fi off; don't let it wake the radio again
 	shownOnline bool          // Wi-Fi state in the last drawn frame
 	sleeping    bool          // drawing the frame that stays up while asleep: Wi-Fi shown off
+	partials    int           // sleep frames drawn without a flash since the last full refresh
+	settle      time.Duration // the wait before suspend; back to 2 s after a failure
 	busy        bool          // refresh button pressed, fetch in progress
 	keys        chan struct{} // power-button presses
 	sshSince    time.Time     // first seen the current ssh session (monotonic: awake time)
@@ -780,8 +789,20 @@ func (a *App) show() {
 		log.Printf("frame: %v", err)
 		return
 	}
-	// -f: full flashing refresh, clears ghosting on every page change
-	if out, err := runBounded(30*time.Second, a.cfg.Fbink, "-q", "-f", "-g", "file="+framePath); err != nil {
+	// A full flashing refresh (-f) clears ghosting but drives the whole panel through black
+	// and white. The frame that stays up while asleep changes little from wake to wake, so it
+	// goes on without a flash, and every fullEvery-th one flashes to clear what built up.
+	// Taps (page changes) always flash. -w: wait until the panel has finished, so suspend
+	// doesn't catch it half drawn (that's what lets the settle before it be short).
+	wait := a.sleeping && !fbinkNoWait
+	args, flash := fbinkArgs(a.sleeping, a.partials, wait)
+	out, err := runBounded(30*time.Second, a.cfg.Fbink, args...)
+	if err != nil && err != errLeftBehind && wait { // an FBInk without -w: draw without it from now on
+		fbinkNoWait = true
+		log.Printf("fbink -w failed (%v %s): drawing without it", err, bytes.TrimSpace(out))
+		out, err = runBounded(30*time.Second, a.cfg.Fbink, slices.DeleteFunc(args, func(s string) bool { return s == "-w" })...)
+	}
+	if err != nil {
 		if err == errLeftBehind {
 			noteLeftBehind("fbink")
 		}
@@ -789,7 +810,30 @@ func (a *App) show() {
 		return
 	}
 	a.shown = frame.Pix
+	if flash {
+		a.partials = 0
+	} else {
+		a.partials++
+	}
 }
+
+// fbinkArgs: the FBInk command line for a frame, and whether it flashes.
+func fbinkArgs(sleeping bool, partials int, wait bool) ([]string, bool) {
+	flash := !sleeping || partials >= fullEvery-1
+	args := []string{"-q"}
+	if flash {
+		args = append(args, "-f")
+	}
+	if wait {
+		args = append(args, "-w")
+	}
+	return append(args, "-g", "file="+framePath), flash
+}
+
+// fullEvery: one sleep frame in this many is a full flashing refresh (about once or twice a day).
+const fullEvery = 6
+
+var fbinkNoWait bool // this FBInk doesn't take -w
 
 // recoverLog, deferred, turns a panic into a log line.
 func recoverLog(where string) {
@@ -1187,7 +1231,14 @@ func (a *App) sleepUntil(due time.Time) string {
 			return false
 		}
 	}
-	if err := suspend(pressed); err == errStayAwake {
+	if a.settle == 0 {
+		a.settle = time.Duration(a.cfg.SettleMs) * time.Millisecond
+	}
+	settle := a.settle
+	if fbinkNoWait { // the panel wasn't waited for: give it Kobo's full 2 s to finish the frame
+		settle = max(settle, 2*time.Second)
+	}
+	if err := suspend(settle, pressed); err == errStayAwake {
 		log.Printf("sleep: power button pressed on the way down, staying awake")
 		reconnectWifi()
 		return "button"
@@ -1195,12 +1246,20 @@ func (a *App) sleepUntil(due time.Time) string {
 		// how long the kernel tried tells the cause apart: ~22 s (2 s settle + 20 s) = the freezer
 		// gave up on a task, ~2 s = a lock or a driver; the kernel log names the task or driver
 		log.Printf("suspend: %v after %v", err, time.Now().Round(0).Sub(start).Round(100*time.Millisecond))
+		if a.settle < 2*time.Second { // maybe too short for this kernel: Kobo's own 2 s from now on
+			a.settle = 2 * time.Second
+			log.Printf("suspend: back to a 2 s settle")
+		}
 		kernelLog()
 		awakeAfterFailedSleep()
 		return "error"
 	}
 	noteSuspend(true)
 	sleptOK.Store(true)
+	if slept := time.Now().Round(0).Sub(start); settle < 2*time.Second && slept < 10*time.Second && d > time.Minute {
+		a.settle = 2 * time.Second // a short settle and an instant wake: the kernel wasn't ready; Kobo's 2 s from now on
+		log.Printf("suspend: woke after %v with a %v settle, back to 2 s", slept.Round(time.Second), settle)
+	}
 	woke := "button"
 	if time.Now().Round(0).After(due.Add(-15 * time.Second)) { // the alarm fires within 1-2 s (logs); a press just before it is a button wake
 		woke = "timer"

@@ -1162,6 +1162,10 @@ func (a *App) sleepUntil(due time.Time) string {
 		d = maxSleep
 	}
 	due = time.Now().Round(0).Add(d) // what the alarm is really set for: wake classification and the screen use it
+	if due.In(a.loc).Format("15:04") != a.nextWake.In(a.loc).Format("15:04") {
+		a.nextWake = due
+		a.show() // the frame says "sonraki HH:MM": the 30 s floor or the cap moved it
+	}
 	a.nextWake = due
 	if err := setWakeAlarm(d); err != nil {
 		log.Printf("alarm: %v", err) // never suspend without a way back
@@ -1197,7 +1201,7 @@ func (a *App) sleepUntil(due time.Time) string {
 	noteSuspend(true)
 	sleptOK.Store(true)
 	woke := "button"
-	if time.Now().Round(0).After(due.Add(-45 * time.Second)) {
+	if time.Now().Round(0).After(due.Add(-15 * time.Second)) { // the alarm fires within 1-2 s (logs); a press just before it is a button wake
 		woke = "timer"
 	}
 	log.Printf("woke: %s after %v %s", woke, time.Now().Round(0).Sub(start).Round(time.Second), battery())

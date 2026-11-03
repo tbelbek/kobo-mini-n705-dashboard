@@ -35,3 +35,17 @@ func TestWakeIRQs(t *testing.T) {
 		}
 	}
 }
+
+// The state letter sits after the name's closing parenthesis, whatever the name holds.
+func TestTaskState(t *testing.T) {
+	for stat, want := range map[string]byte{
+		"7233 (rmmod) D 1 7233 0":         'D',
+		"42 (a) b (c)) S 1":               'S',
+		"7168 (ksdioirqd/mmc1) D 2 0 0 0": 'D',
+		"garbage":                         0,
+	} {
+		if got := taskState(stat); got != want {
+			t.Errorf("%q: %q, want %q", stat, got, want)
+		}
+	}
+}

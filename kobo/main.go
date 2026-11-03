@@ -692,9 +692,38 @@ func hasDefaultRoute(table string) bool {
 // Bounded: on 2 Nov a v0.7.11 process logged nothing after its first refresh and
 // never reached "sleep:" for 5 hours; toggle.sh off is the blocking call on that path.
 func wifiDown() {
-	if wifiOff() == errLeftBehind {
-		noteLeftBehind("toggle.sh") // after wifiMu is released: healing takes it again
+	if wifiOff() != errLeftBehind {
+		return
 	}
+	if stuckInDriver() { // never clears: reboot now rather than climb the ladder for 15 min
+		log.Printf("wifi off: rmmod stuck in the Wi-Fi driver (its unload deadlock)")
+		kernelLog()
+		rebootDevice("rmmod stuck in the Wi-Fi driver", false, true)
+		return
+	}
+	noteLeftBehind("toggle.sh") // after wifiMu is released: healing takes it again
+}
+
+// stuckInDriver: an rmmod waiting in the kernel. The N705's dhd can deadlock on unload (the
+// 3 Nov hang: rmmod in kthread_stop for the SDIO interrupt thread, that thread in down(),
+// dhd_watchdog in __mmc_claim_host), and a task stuck so never wakes: Wi-Fi can't come
+// back and the freezer can't freeze it, so the device can't suspend either.
+func stuckInDriver() bool {
+	pids, names := helperPids()
+	for i, n := range names {
+		if n == "rmmod" && taskState(readProc(fmt.Sprintf("/proc/%d/stat", pids[i]))) == 'D' {
+			return true
+		}
+	}
+	return false
+}
+
+// taskState: the state letter in a /proc/<pid>/stat line (after the ")" that ends the name).
+func taskState(stat string) byte {
+	if i := strings.LastIndexByte(stat, ')'); i >= 0 && i+2 < len(stat) {
+		return stat[i+2]
+	}
+	return 0
 }
 
 // wifiOff switches the radio off; the watchdog calls it directly (no escalation from inside).
@@ -724,7 +753,9 @@ const (
 	wifiOnScript = `grep -q '^sdio_wifi_pwr ' /proc/modules || insmod /modules/sdio_wifi_pwr.ko; sleep 0.25; ` +
 		`grep -q '^dhd ' /proc/modules || insmod /modules/dhd.ko; sleep 1; ` + // "Race-y as hell, don't try to optimize this!"
 		`ifconfig eth0 up; wlarm_le up; echo "wifi on: $?"; `
-	wifiOffScript = `killall -q connect_to_network.sh udhcpc 2>/dev/null; wpa_cli -i eth0 terminate >/dev/null 2>&1; ` +
+	// timesync.sh first: the connect script runs it, and killing the script leaves its
+	// ntpdate sending on an interface that is going away (seen in wifi.log on 3 Nov).
+	wifiOffScript = `killall -q timesync.sh ntpdate connect_to_network.sh udhcpc 2>/dev/null; wpa_cli -i eth0 terminate >/dev/null 2>&1; ` +
 		`killall -q wpa_supplicant 2>/dev/null; wlarm_le down >/dev/null 2>&1; ip addr flush dev eth0 2>/dev/null; ` +
 		`ifconfig eth0 down 2>/dev/null; sleep 0.25; ` +
 		`grep -q '^dhd ' /proc/modules && rmmod dhd; sleep 0.25; ` + // dhd fully gone before its power goes

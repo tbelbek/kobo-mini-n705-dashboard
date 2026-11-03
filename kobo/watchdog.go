@@ -266,7 +266,7 @@ func cleanWifi() {
 // helper programs kobodash runs that could be left stuck (comm names, 15 chars at most)
 var helperNames = map[string]bool{"fbink": true, "toggle.sh": true, "connect_to_netw": true,
 	"prepare_changin": true, "udhcpc": true, "wpa_supplicant": true, "wpa_passphrase": true,
-	"wlarm_le": true, "rmmod": true, "insmod": true, "dmesg": true}
+	"wlarm_le": true, "rmmod": true, "insmod": true, "dmesg": true, "timesync.sh": true, "ntpdate": true}
 
 // helperPids: the helpers running now, with their names.
 func helperPids() (pids []int, names []string) {

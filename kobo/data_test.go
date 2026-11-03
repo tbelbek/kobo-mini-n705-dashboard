@@ -127,6 +127,17 @@ func TestNextSlot(t *testing.T) {
 			t.Errorf("%s -> %s, want %s", c[0], got.Format("01-02 15:04:05"), c[1])
 		}
 	}
+	// DST days keep even hours: 2026-03-29 (02:00 skipped) and 2026-10-25 (02:00 twice)
+	for _, c := range [][2]string{
+		{"2026-03-29 06:00:10", "2026-03-29 08:00:00"},
+		{"2026-03-29 08:00:10", "2026-03-29 10:00:00"},
+		{"2026-10-25 06:00:10", "2026-10-25 08:00:00"},
+		{"2026-10-25 20:00:10", "2026-10-25 22:00:00"},
+	} {
+		if got := a.nextSlot(at(c[0])); !got.Equal(at(c[1])) {
+			t.Errorf("DST %s -> %s, want %s", c[0], got.Format("01-02 15:04:05"), c[1])
+		}
+	}
 	if !a.nextSlot(time.Time{}).IsZero() {
 		t.Error("never refreshed must be due now")
 	}
@@ -176,5 +187,55 @@ func TestStamped(t *testing.T) {
 	got := b.String()
 	if !strings.HasPrefix(got, "+ 0.00s Turning Wi-Fi ON\n+ 0.00s Sending discover...\n") || strings.Count(got, "+") != 2 {
 		t.Errorf("stamped output %q", got)
+	}
+}
+
+// Recurrence rules calendars really export (Google, iCloud): several weekdays, the nth
+// weekday of a month, month-end days, UTC starts across DST, long-running series, and
+// moved or cancelled single occurrences (RECURRENCE-ID).
+func TestICSRecurrence(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	ev := func(body string) string {
+		return "BEGIN:VEVENT\r\n" + strings.ReplaceAll(body, "\n", "\r\n") + "\r\nEND:VEVENT\r\n"
+	}
+	day := func(s string) time.Time { v, _ := time.ParseInLocation("2006-01-02", s, loc); return v }
+	for _, c := range []struct {
+		name, ics, lo, hi string
+		want              []string
+	}{
+		{"weekly on two days", ev("DTSTART;TZID=Europe/Stockholm:20261102T100000\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE\nSUMMARY:x"),
+			"2026-11-01", "2026-11-15", []string{"11-02 10:00", "11-04 10:00", "11-09 10:00", "11-11 10:00"}},
+		{"weekly with count", ev("DTSTART;TZID=Europe/Stockholm:20261102T100000\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=3\nSUMMARY:x"),
+			"2026-11-01", "2026-11-30", []string{"11-02 10:00", "11-04 10:00", "11-09 10:00"}},
+		{"every other week", ev("DTSTART;TZID=Europe/Stockholm:20261103T180000\nRRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU\nSUMMARY:x"),
+			"2026-11-01", "2026-11-30", []string{"11-03 18:00", "11-17 18:00"}},
+		{"first Monday", ev("DTSTART;TZID=Europe/Stockholm:20261102T090000\nRRULE:FREQ=MONTHLY;BYDAY=1MO\nSUMMARY:x"),
+			"2026-11-01", "2027-01-31", []string{"11-02 09:00", "12-07 09:00", "01-04 09:00"}},
+		{"last Friday", ev("DTSTART;TZID=Europe/Stockholm:20261030T170000\nRRULE:FREQ=MONTHLY;BYDAY=-1FR\nSUMMARY:x"),
+			"2026-11-01", "2026-12-31", []string{"11-27 17:00", "12-25 17:00"}},
+		{"Monday in the first week (BYDAY with BYMONTHDAY)", ev("DTSTART;TZID=Europe/Stockholm:20261102T090000\nRRULE:FREQ=MONTHLY;BYDAY=MO;BYMONTHDAY=1,2,3,4,5,6,7;COUNT=3\nSUMMARY:x"),
+			"2026-11-01", "2027-02-28", []string{"11-02 09:00", "12-07 09:00", "01-04 09:00"}},
+		{"31st skips short months", ev("DTSTART;VALUE=DATE:20270131\nRRULE:FREQ=MONTHLY\nSUMMARY:x"),
+			"2027-01-01", "2027-05-31", []string{"01-31 00:00", "03-31 00:00", "05-31 00:00"}},
+		{"UTC start keeps UTC across DST", ev("DTSTART:20260901T080000Z\nRRULE:FREQ=WEEKLY\nSUMMARY:x"),
+			"2026-11-02", "2026-11-08", []string{"11-03 09:00"}},
+		{"daily series from 2015", ev("DTSTART;TZID=Europe/Stockholm:20150101T070000\nRRULE:FREQ=DAILY\nSUMMARY:x"),
+			"2026-11-03", "2026-11-04", []string{"11-03 07:00", "11-04 07:00"}},
+		{"yearly birthday", ev("DTSTART;VALUE=DATE:20100315\nRRULE:FREQ=YEARLY\nSUMMARY:x"),
+			"2027-03-01", "2027-03-31", []string{"03-15 00:00"}},
+		{"moved occurrence", ev("UID:a\nDTSTART;TZID=Europe/Stockholm:20261103T100000\nRRULE:FREQ=WEEKLY\nSUMMARY:x") +
+			ev("UID:a\nRECURRENCE-ID;TZID=Europe/Stockholm:20261110T100000\nDTSTART;TZID=Europe/Stockholm:20261111T120000\nSUMMARY:x"),
+			"2026-11-09", "2026-11-18", []string{"11-11 12:00", "11-17 10:00"}},
+		{"cancelled occurrence", ev("UID:b\nDTSTART;TZID=Europe/Stockholm:20261103T100000\nRRULE:FREQ=WEEKLY\nSUMMARY:x") +
+			ev("UID:b\nRECURRENCE-ID;TZID=Europe/Stockholm:20261110T100000\nDTSTART;TZID=Europe/Stockholm:20261110T100000\nSTATUS:CANCELLED\nSUMMARY:x"),
+			"2026-11-09", "2026-11-18", []string{"11-17 10:00"}},
+	} {
+		var got []string
+		for _, e := range parseICS("BEGIN:VCALENDAR\r\n"+c.ics+"END:VCALENDAR\r\n", day(c.lo), day(c.hi), loc) {
+			got = append(got, e.Start.Format("01-02 15:04"))
+		}
+		if strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
 	}
 }

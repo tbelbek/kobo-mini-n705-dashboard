@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -132,14 +133,20 @@ func loadConfig(path string) Config {
 			c.InvX = b
 		case "TOUCH_INVY":
 			c.InvY = b
-		case "TOUCH_MAXX":
-			c.MaxX = int(num)
+		case "TOUCH_MAXX": // 0 or junk would divide by zero on the first tap
+			if num > 0 {
+				c.MaxX = int(num)
+			}
 		case "TOUCH_MAXY":
-			c.MaxY = int(num)
+			if num > 0 {
+				c.MaxY = int(num)
+			}
 		case "ROTATE":
 			c.Rotate = v
-		case "REFRESH_MIN":
-			c.RefreshMin = int(num)
+		case "REFRESH_MIN": // 0 would wake every 30 s
+			if num >= 1 {
+				c.RefreshMin = int(num)
+			}
 		case "CAL_REFRESH_MIN":
 			c.CalRefreshMin = int(num)
 		case "WIFI_IDLE_MIN":
@@ -720,6 +727,17 @@ func main() {
 		}
 	}
 	log.Printf("kobodash %s starting", version)
+	if onDevice() {
+		trialStart()
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+		go func() {
+			s := <-stop
+			trialStopped()
+			log.Printf("stopped by %v", s)
+			os.Exit(0)
+		}()
+	}
 	exec.Command("killall", "-9", "inkbox-splash").Run()                     // InkBox's boot splash keeps drawing otherwise
 	os.WriteFile("/sys/class/leds/pmic_ledsg/brightness", []byte("0"), 0644) // ipd used to switch the LED off
 	taps := make(chan image.Point, 8)
@@ -818,6 +836,9 @@ func main() {
 		for cfg.Sleep && (sleepNow || time.Since(lastTouch) > awakeIdle) && !a.wifiPinned && !sshActive() {
 			sleepNow = false
 			woke := a.sleepUntil(a.nextSlot(a.updated))
+			if woke != "error" {
+				trialPassed()
+			}
 			a.wokeBy = map[string]string{"timer": "zamanlayıcı", "button": "güç tuşu"}[woke]
 			resumed = time.Now()
 			if woke == "timer" {
@@ -851,12 +872,17 @@ func (a *App) nextSlot(t time.Time) time.Time {
 		early = every / 4
 	}
 	t = t.Add(early)
+	// slots are local wall-clock times built with time.Date, not midnight + n*2h, so they
+	// stay on even hours across a DST change (a nonexistent 02:00 normalises to 03:00)
 	l := t.In(a.loc)
-	s := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, a.loc) // ponytail: grid restarts at midnight; fine while REFRESH_MIN divides 24 h
-	for !s.After(t) {
-		s = s.Add(every)
+	for day := 0; day < 3; day++ {
+		for m := 0; m < 24*60; m += a.cfg.RefreshMin {
+			if s := time.Date(l.Year(), l.Month(), l.Day()+day, 0, m, 0, 0, a.loc); s.After(t) {
+				return a.wakeAt(s)
+			}
+		}
 	}
-	return a.wakeAt(s)
+	return a.wakeAt(t)
 }
 
 // wakeAt: due, or the end of the quiet hours when due falls inside them.

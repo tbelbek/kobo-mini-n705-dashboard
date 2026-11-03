@@ -386,7 +386,7 @@ func parseDT(v string, params map[string]string, loc *time.Location) (time.Time,
 	if err != nil {
 		t, err = time.ParseInLocation("20060102T1504", v, zone)
 	}
-	return t.In(loc), false, err
+	return t, false, err // in its own zone: a recurrence repeats on that zone's clock
 }
 
 // spanDays: extra days a multi-day event covers after its start day (0 = one day).
@@ -410,18 +410,76 @@ func spanDays(start, end time.Time, allDay, hasEnd bool, loc *time.Location) int
 	return 0
 }
 
-func addMonthsClamp(t time.Time, n int) time.Time {
-	y, m, d := t.Date()
-	first := time.Date(y, m+time.Month(n), 1, 0, 0, 0, 0, t.Location())
-	last := time.Date(first.Year(), first.Month()+1, 0, 0, 0, 0, 0, t.Location()).Day()
-	if d > last {
-		d = last
+var weekdays = map[string]time.Weekday{"SU": time.Sunday, "MO": time.Monday, "TU": time.Tuesday,
+	"WE": time.Wednesday, "TH": time.Thursday, "FR": time.Friday, "SA": time.Saturday}
+
+// monthDays: the days of month m (1-based) a MONTHLY/YEARLY rule picks: BYDAY ("1MO",
+// "-1FR", or "TU" for every Tuesday), else BYMONTHDAY, else the start's own day.
+// A day the month doesn't have is skipped, not moved (31 Feb is no date).
+func monthDays(y int, m time.Month, rule map[string]string, base time.Time) []int {
+	last := time.Date(y, m+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	var out []int
+	var monthDay map[int]bool // BYMONTHDAY with BYDAY: only the days in both
+	if md := rule["BYMONTHDAY"]; md != "" && rule["BYDAY"] != "" {
+		monthDay = map[int]bool{}
+		for _, d := range monthDays(y, m, map[string]string{"BYMONTHDAY": md}, base) {
+			monthDay[d] = true
+		}
 	}
-	return time.Date(first.Year(), first.Month(), d, t.Hour(), t.Minute(), t.Second(), 0, t.Location())
+	if bd := rule["BYDAY"]; bd != "" {
+		for _, v := range strings.Split(bd, ",") {
+			wd, ok := weekdays[strings.ToUpper(v[max(len(v)-2, 0):])]
+			if !ok {
+				continue
+			}
+			var all []int
+			for d := 1; d <= last; d++ {
+				if time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Weekday() == wd {
+					all = append(all, d)
+				}
+			}
+			n, err := strconv.Atoi(v[:len(v)-2])
+			switch {
+			case len(v) == 2 || err != nil || n == 0:
+				out = append(out, all...)
+			case n > 0 && n <= len(all):
+				out = append(out, all[n-1])
+			case n < 0 && -n <= len(all):
+				out = append(out, all[len(all)+n])
+			}
+		}
+		if monthDay != nil {
+			kept := out[:0]
+			for _, d := range out {
+				if monthDay[d] {
+					kept = append(kept, d)
+				}
+			}
+			out = kept
+		}
+	} else if md := rule["BYMONTHDAY"]; md != "" {
+		for _, v := range strings.Split(md, ",") {
+			if n, err := strconv.Atoi(v); err == nil && n != 0 {
+				if n < 0 {
+					n = last + 1 + n
+				}
+				if n >= 1 && n <= last {
+					out = append(out, n)
+				}
+			}
+		}
+	} else if base.Day() <= last {
+		out = []int{base.Day()}
+	}
+	sort.Ints(out)
+	return out
 }
 
-// expand yields occurrence starts whose day is within [lo, hi].
-// ponytail: FREQ DAILY/WEEKLY/MONTHLY/YEARLY + INTERVAL + COUNT/UNTIL only, no BYDAY.
+// expand yields occurrence starts whose day (in loc) is within [lo, hi]. It walks the rule
+// period by period (day, week, month, year) in the start's own zone, so a 09:00 UTC series
+// stays 09:00 UTC across DST and a local one stays on local time.
+// ponytail: FREQ DAILY/WEEKLY/MONTHLY/YEARLY, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY,
+// BYMONTH (yearly); no BYSETPOS/BYWEEKNO/BYYEARDAY, week start fixed to Monday.
 func expand(base time.Time, rule map[string]string, lo, hi time.Time, loc *time.Location) []time.Time {
 	interval, _ := strconv.Atoi(rule["INTERVAL"])
 	if interval < 1 {
@@ -435,27 +493,100 @@ func expand(base time.Time, rule map[string]string, lo, hi time.Time, loc *time.
 	if u := rule["UNTIL"]; len(u) >= 8 {
 		until, _ = time.ParseInLocation("20060102", u[:8], loc)
 	}
+	z := base.Location()
+	at := func(y int, m time.Month, d int) time.Time {
+		return time.Date(y, m, d, base.Hour(), base.Minute(), base.Second(), 0, z)
+	}
+	by, bm, bd := base.Date()
+	ly, lm, _ := lo.In(z).Date()
+	// period k: its first day (to stop past hi) and its occurrences in order
+	var period func(k int) (time.Time, []time.Time)
+	skip := 0 // periods wholly before lo; jumped over when nothing is counted
+	switch rule["FREQ"] {
+	case "DAILY":
+		period = func(k int) (time.Time, []time.Time) {
+			d := at(by, bm, bd+k*interval)
+			return d, []time.Time{d}
+		}
+		skip = daysBetween(midnight(base, loc), lo) / interval
+	case "WEEKLY":
+		monday := bd - (int(base.Weekday())+6)%7
+		var offs []int
+		for _, v := range strings.Split(rule["BYDAY"], ",") {
+			if wd, ok := weekdays[strings.ToUpper(strings.TrimSpace(v))]; ok {
+				offs = append(offs, (int(wd)+6)%7)
+			}
+		}
+		if len(offs) == 0 {
+			offs = []int{(int(base.Weekday()) + 6) % 7}
+		}
+		sort.Ints(offs)
+		period = func(k int) (time.Time, []time.Time) {
+			var out []time.Time
+			for _, o := range offs {
+				out = append(out, at(by, bm, monday+7*k*interval+o))
+			}
+			return at(by, bm, monday+7*k*interval), out
+		}
+		skip = daysBetween(midnight(base, loc), lo) / (7 * interval)
+	case "MONTHLY":
+		period = func(k int) (time.Time, []time.Time) {
+			first := time.Date(by, bm+time.Month(k*interval), 1, 0, 0, 0, 0, z) // month overflow rolls the year
+			var out []time.Time
+			for _, d := range monthDays(first.Year(), first.Month(), rule, base) {
+				out = append(out, at(first.Year(), first.Month(), d))
+			}
+			return first, out
+		}
+		skip = ((ly-by)*12 + int(lm-bm)) / interval
+	case "YEARLY":
+		months := []time.Month{bm}
+		if v := rule["BYMONTH"]; v != "" {
+			months = nil
+			for _, x := range strings.Split(v, ",") {
+				if n, err := strconv.Atoi(x); err == nil && n >= 1 && n <= 12 {
+					months = append(months, time.Month(n))
+				}
+			}
+			sort.Slice(months, func(i, j int) bool { return months[i] < months[j] })
+		}
+		period = func(k int) (time.Time, []time.Time) {
+			y := by + k*interval
+			var out []time.Time
+			for _, m := range months {
+				for _, d := range monthDays(y, m, rule, base) {
+					out = append(out, at(y, m, d))
+				}
+			}
+			return time.Date(y, 1, 1, 0, 0, 0, 0, z), out
+		}
+		skip = (ly - by) / interval
+	default:
+		return []time.Time{base}
+	}
+	k := 0
+	if count < 0 && skip > 1 {
+		k = skip - 1 // one period of slack: lo may fall mid-period
+	}
 	var out []time.Time
-	cur := base
-	for n := 0; n < 2000; n++ {
-		d := midnight(cur, loc)
-		if (!until.IsZero() && d.After(until)) || (count >= 0 && n >= count) || d.After(hi) {
+	n := 0
+	for limit := k + 5000; k < limit; k++ { // bounded: a window is months, not thousands of periods
+		pstart, occ := period(k)
+		if midnight(pstart, loc).After(hi) {
 			break
 		}
-		if !d.Before(lo) {
-			out = append(out, cur)
-		}
-		switch rule["FREQ"] {
-		case "DAILY":
-			cur = cur.AddDate(0, 0, interval)
-		case "WEEKLY":
-			cur = cur.AddDate(0, 0, 7*interval)
-		case "MONTHLY":
-			cur = addMonthsClamp(cur, interval)
-		case "YEARLY":
-			cur = addMonthsClamp(cur, 12*interval)
-		default:
-			return out
+		for _, o := range occ {
+			if o.Before(base) {
+				continue
+			}
+			d := midnight(o, loc)
+			if (!until.IsZero() && d.After(until)) || (count >= 0 && n >= count) || d.After(hi) {
+				return out
+			}
+			n++
+			if !d.Before(lo) {
+				out = append(out, o)
+			}
 		}
 	}
 	return out
@@ -471,7 +602,11 @@ func parseICS(raw string, lo, hi time.Time, loc *time.Location) []Event {
 			lines = append(lines, l)
 		}
 	}
-	var out []Event
+	type vevent struct {
+		p      map[string]string
+		params map[string]map[string]string
+	}
+	var evs []vevent
 	var cur map[string]string
 	var curParams map[string]map[string]string
 	for _, l := range lines {
@@ -479,7 +614,7 @@ func parseICS(raw string, lo, hi time.Time, loc *time.Location) []Event {
 		case l == "BEGIN:VEVENT":
 			cur, curParams = map[string]string{}, map[string]map[string]string{}
 		case l == "END:VEVENT" && cur != nil:
-			out = append(out, buildEvents(cur, curParams, lo, hi, loc)...)
+			evs = append(evs, vevent{cur, curParams})
 			cur = nil
 		case cur != nil:
 			i := strings.Index(l, ":")
@@ -501,11 +636,32 @@ func parseICS(raw string, lo, hi time.Time, loc *time.Location) []Event {
 			cur[key], curParams[key] = v, params
 		}
 	}
+	// A moved or cancelled single occurrence comes as its own VEVENT with the series' UID
+	// and RECURRENCE-ID = the original start; the series must then skip that start.
+	moved := map[string]map[time.Time]bool{}
+	for _, e := range evs {
+		if rid, ok := e.p["RECURRENCE-ID"]; ok {
+			if t, _, err := parseDT(rid, e.params["RECURRENCE-ID"], loc); err == nil {
+				if moved[e.p["UID"]] == nil {
+					moved[e.p["UID"]] = map[time.Time]bool{}
+				}
+				moved[e.p["UID"]][t.UTC()] = true
+			}
+		}
+	}
+	var out []Event
+	for _, e := range evs {
+		var skip map[time.Time]bool
+		if _, ok := e.p["RECURRENCE-ID"]; !ok {
+			skip = moved[e.p["UID"]]
+		}
+		out = append(out, buildEvents(e.p, e.params, lo, hi, loc, skip)...)
+	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Start.Before(out[b].Start) })
 	return out
 }
 
-func buildEvents(p map[string]string, params map[string]map[string]string, lo, hi time.Time, loc *time.Location) []Event {
+func buildEvents(p map[string]string, params map[string]map[string]string, lo, hi time.Time, loc *time.Location, moved map[time.Time]bool) []Event {
 	if _, ok := p["DTSTART"]; !ok || strings.EqualFold(p["STATUS"], "CANCELLED") {
 		return nil
 	}
@@ -536,9 +692,15 @@ func buildEvents(p map[string]string, params map[string]map[string]string, lo, h
 		}
 		starts = expand(start, rule, lo.AddDate(0, 0, -span), hi, loc)
 	}
-	if ex := p["EXDATE"]; ex != "" { // occurrences deleted from a recurring event
+	if ex := p["EXDATE"]; ex != "" || len(moved) > 0 { // occurrences deleted from, or moved out of, a series
 		skip := map[time.Time]bool{}
+		for t := range moved {
+			skip[t] = true
+		}
 		for _, v := range strings.Split(ex, ",") {
+			if v == "" {
+				continue
+			}
 			if t, _, err := parseDT(v, params["EXDATE"], loc); err == nil {
 				skip[t.UTC()] = true
 			}
@@ -556,7 +718,7 @@ func buildEvents(p map[string]string, params map[string]map[string]string, lo, h
 		d := midnight(s, loc)
 		last := d.AddDate(0, 0, span)
 		if !d.After(hi) && !last.Before(lo) {
-			out = append(out, Event{Start: s, AllDay: allDay, Last: last, Summary: summary,
+			out = append(out, Event{Start: s.In(loc), AllDay: allDay, Last: last, Summary: summary,
 				Loc: unescapeICS(p["LOCATION"]), Desc: unescapeICS(p["DESCRIPTION"]), Tag: "cal"})
 		}
 	}

@@ -26,6 +26,8 @@ func TestCheckUpdate(t *testing.T) {
 		{"good signature installs", "v2", ed25519.Sign(priv, newBin), true},
 		{"wrong key is rejected", "v2", ed25519.Sign(otherPriv, newBin), false},
 		{"same version is a no-op", "v1", ed25519.Sign(priv, newBin), false},
+		{"older tag is a no-op", "v0.9", ed25519.Sign(priv, newBin), false},
+		{"rejected tag is a no-op", "v3", ed25519.Sign(priv, newBin), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -46,6 +48,7 @@ func TestCheckUpdate(t *testing.T) {
 			updateDir = t.TempDir()
 			cur := filepath.Join(updateDir, "kobodash")
 			os.WriteFile(cur, []byte("OLD BINARY"), 0755)
+			os.WriteFile(filepath.Join(updateDir, "rejected"), []byte("v3"), 0o644)
 			version = "v1"
 			a := &App{cfg: Config{UpdateRepo: "o/r", UpdateAPI: srv.URL, UpdatePubKey: hex.EncodeToString(pub)}}
 
@@ -58,10 +61,109 @@ func TestCheckUpdate(t *testing.T) {
 				if string(now) != "NEW BINARY" || string(prev) != "OLD BINARY" {
 					t.Fatalf("after install: current=%q prev=%q", now, prev)
 				}
+				if tr, _ := os.ReadFile(filepath.Join(updateDir, "trying")); string(tr) != c.tag {
+					t.Fatalf("trying = %q, want %q", tr, c.tag)
+				}
 			} else if string(now) != "OLD BINARY" || prevErr == nil {
 				t.Fatalf("must not touch files: current=%q prev exists=%v", now, prevErr == nil)
 			}
 		})
+	}
+}
+
+// A .prev that can't be written must stop the install: a rollback would restore it.
+func TestInstallAbortsWithoutBackup(t *testing.T) {
+	updateDir = t.TempDir()
+	cur := filepath.Join(updateDir, "kobodash")
+	os.WriteFile(cur, []byte("OLD"), 0755)
+	os.Mkdir(cur+".prev", 0755) // writing a file over a directory fails
+	if err := installBinary([]byte("NEW"), "v2"); err == nil {
+		t.Fatal("install succeeded without a backup")
+	}
+	if b, _ := os.ReadFile(cur); string(b) != "OLD" {
+		t.Fatalf("current = %q", b)
+	}
+	for _, f := range []string{".new"} {
+		if _, err := os.Stat(cur + f); err == nil {
+			t.Errorf("%s left behind", f)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(updateDir, "trying")); err == nil {
+		t.Error("trying left behind")
+	}
+}
+
+// A release on trial that keeps restarting puts the previous binary back and is rejected;
+// the binary supervise.sh rolled back to rejects it too; a passed trial clears the marker.
+func TestTrial(t *testing.T) {
+	var exited bool
+	exit = func(int) { exited = true }
+	defer func() { exit = os.Exit }()
+	setup := func() string {
+		updateDir = t.TempDir()
+		cur := filepath.Join(updateDir, "kobodash")
+		os.WriteFile(cur, []byte("NEW"), 0755)
+		os.WriteFile(cur+".prev", []byte("OLD"), 0755)
+		os.WriteFile(filepath.Join(updateDir, "trying"), []byte("v2"), 0o644)
+		exited = false
+		return cur
+	}
+	read := func(f string) string { b, _ := os.ReadFile(filepath.Join(updateDir, f)); return string(b) }
+
+	version = "v2"
+	cur := setup()
+	for i := 1; i < trialStarts; i++ {
+		trialStart()
+		if exited || read("kobodash") != "NEW" {
+			t.Fatalf("rolled back after %d starts", i)
+		}
+	}
+	trialStart()
+	if !exited || read("kobodash") != "OLD" || read("rejected") != "v2" || read("trying") != "" {
+		t.Fatalf("no rollback: exited=%v current=%q rejected=%q", exited, read("kobodash"), read("rejected"))
+	}
+	if _, err := os.Stat(cur + ".prev"); err == nil {
+		t.Error(".prev still there")
+	}
+
+	setup()
+	version = "v1" // supervise.sh restored v1
+	trialStart()
+	if exited || read("rejected") != "v2" || read("trying") != "" {
+		t.Fatalf("rolled-back binary: exited=%v rejected=%q trying=%q", exited, read("rejected"), read("trying"))
+	}
+
+	setup() // clean stops (killall, deploy) don't use up the trial
+	version = "v2"
+	for i := 0; i < 3*trialStarts; i++ {
+		trialStart()
+		trialStopped()
+	}
+	if exited || read("kobodash") != "NEW" || read("rejected") != "" {
+		t.Fatalf("clean restarts rolled back: exited=%v rejected=%q", exited, read("rejected"))
+	}
+
+	setup()
+	version = "v2"
+	trialStart()
+	trialPassed()
+	if read("trying") != "" || read("starts") != "" || read("rejected") != "" {
+		t.Fatalf("passed trial left trying=%q starts=%q rejected=%q", read("trying"), read("starts"), read("rejected"))
+	}
+}
+
+func TestNewer(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"v0.7.26", "v0.7.25", true}, {"v0.7.10", "v0.7.9", true}, {"v0.8", "v0.7.30", true},
+		{"v0.7.25", "v0.7.25", false}, {"v0.7.3", "v0.7.25", false}, {"v1", "v0.9.9", true},
+		{"nightly", "v0.7.25", true},
+	} {
+		if got := newer(c.a, c.b); got != c.want {
+			t.Errorf("newer(%s, %s) = %v", c.a, c.b, got)
+		}
 	}
 }
 

@@ -51,6 +51,7 @@ var (
 	leftBehind   atomic.Int32
 	netFails     atomic.Int32
 	sleptOK      atomic.Bool // a suspend and resume worked in this process
+	offFailed    atomic.Bool // the last Wi-Fi off reported an error (helpers may be left)
 	// Wi-Fi switched off while awake on purpose (idle timer, the icon): the heartbeat says
 	// so, and supervise.sh's rescue mode doesn't count the missing route
 	wifiOffOnPurpose atomic.Bool
@@ -238,9 +239,6 @@ func cleanWifi() {
 		return // a connect is on its way: that is not a leftover
 	}
 	var left []string
-	if pids, _ := helperPids(); len(pids) > 0 {
-		left = append(left, "helpers")
-	}
 	for _, l := range strings.Split(readProc("/proc/modules"), "\n") {
 		if strings.HasPrefix(l, "dhd ") {
 			left = append(left, "dhd loaded")
@@ -248,6 +246,12 @@ func cleanWifi() {
 	}
 	if _, err := os.Stat("/run/connect_to_network.sh.pid"); err == nil {
 		left = append(left, "pid file")
+	}
+	// the /proc scan only when an earlier wake may have left helpers: a clean off leaves none
+	if len(left) > 0 || offFailed.Load() {
+		if pids, _ := helperPids(); len(pids) > 0 {
+			left = append(left, "helpers")
+		}
 	}
 	if len(left) == 0 {
 		return

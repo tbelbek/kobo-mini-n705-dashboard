@@ -293,7 +293,7 @@ func (a *App) nav(img *image.Gray) {
 	a.tap(image.Rect(W-72, 0, W, 58), func() {
 		a.busy = true
 		a.show()
-		a.forceCal, a.wantUpdate = true, true
+		a.forceCal = true
 		a.refresh()
 		a.busy = false
 	})

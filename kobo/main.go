@@ -315,7 +315,14 @@ func (a *App) refresh() {
 	if cal { // calendars change rarely: every CAL_REFRESH_MIN, or now when the refresh button asked
 		run(func() { calErr = a.cal.Refresh() })
 	}
+	installed := false
+	if onDevice() { // a new release? one GitHub call (a 304 when nothing is new), side by side with the rest
+		run(func() { installed = a.checkUpdate() })
+	}
 	wg.Wait()
+	if installed {
+		exit(0) // supervise.sh starts the new binary, which refreshes and reports
+	}
 	// the network works when something came back over it, not when a route exists
 	// the network works when a server answered (weather, warnings, calendars, Telegram:
 	// any of them), not when a route exists and not when one service is down
@@ -669,6 +676,7 @@ func wifiOff() error {
 	defer wifiMu.Unlock()
 	killConnect()
 	_, err := runBounded(30*time.Second, "/usr/local/bin/wifi/toggle.sh", "off")
+	offFailed.Store(err != nil)
 	if err != nil {
 		log.Printf("wifi off: %v", err)
 	}
@@ -974,13 +982,12 @@ func main() {
 	a.show()
 	tick := time.NewTicker(10 * time.Second)
 	lastTouch, lastTry, resumed := time.Now(), time.Now(), time.Time{}
-	lastBeat := time.Now()
-	maybeUpdate := func() { // right after a refresh, while Wi-Fi is up: one GitHub call, a 304 when nothing is new
-		if a.checkUpdate() {
-			exit(0) // supervise.sh starts the new binary
-		}
+	if up, _ := strconv.ParseFloat(strings.Fields(readProc("/proc/uptime") + " 0")[0], 64); up > 600 {
+		// not a boot: a restart (crash, watchdog, deploy) with likely nobody looking; don't
+		// stay up two minutes with Wi-Fi on, sleep once the refresh is done
+		lastTouch = time.Time{}
 	}
-	maybeUpdate()
+	lastBeat := time.Now()
 	if len(updated) > 0 {
 		if a.wErr == nil { // came up fine: say so and go straight back to sleep, nobody is looking
 			if cfg.TgLogThread != "" {
@@ -1015,10 +1022,6 @@ func main() {
 			}
 			if !online() && !a.skipWake {
 				reconnectWifi() // a touch opens a Wi-Fi window (ssh, refresh) without blocking the UI
-			}
-			if a.wantUpdate { // refresh button: don't wait for the next timed wake
-				a.wantUpdate = false
-				maybeUpdate()
 			}
 		case <-tick.C:
 			if !a.atHome() && time.Since(lastTouch) > time.Duration(cfg.IdleBackMin)*time.Minute {
@@ -1065,7 +1068,6 @@ func main() {
 				lastTouch = time.Time{}
 				lastTry = time.Now()
 				a.refresh()
-				maybeUpdate()
 				if a.sshHold() || a.wifiPinned || holdAwake.Load() {
 					a.show() // it won't go straight back down, so show the new data now
 				}

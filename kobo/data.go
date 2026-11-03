@@ -4,6 +4,7 @@ package main
 // an ICS reader (DTSTART/DTEND/TZID/RRULE subset, multi-day spans, red days).
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	_ "time/tzdata" // the Kobo has no reliable zoneinfo; embed it
@@ -101,10 +103,13 @@ func locate() (Place, string, error) {
 		Success             bool
 		Latitude, Longitude float64
 	}
-	if err := fetch("https://get.geojs.io/v1/ip/geo.json", &g); err != nil {
-		return Place{}, "", err
-	}
-	if err := fetch("https://ipwho.is/?fields=success,latitude,longitude", &w); err != nil {
+	var ge, we error // both at once: two round trips of radio time become one
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); ge = fetch("https://get.geojs.io/v1/ip/geo.json", &g) }()
+	go func() { defer wg.Done(); we = fetch("https://ipwho.is/?fields=success,latitude,longitude", &w) }()
+	wg.Wait()
+	if err := cmp.Or(ge, we); err != nil {
 		return Place{}, "", err
 	}
 	lat, e1 := strconv.ParseFloat(g.Latitude, 64)
@@ -792,26 +797,36 @@ func (c *Calendar) Refresh() error {
 	if c.raw == nil {
 		c.raw = map[string]string{}
 	}
+	// side by side: every second here is a second of Wi-Fi radio
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	var firstErr error
 	for _, u := range append(append([]string{}, c.Feeds...), c.Holiday) {
-		beat() // each feed may take its full HTTP timeout; the watchdog must not count that as a hang
 		if u == "" {
 			continue
 		}
-		b, err := get(u)
-		if err == nil && !strings.Contains(string(b[:min(len(b), 4096)]), "BEGIN:VCALENDAR") {
-			err = fmt.Errorf("%s: not a calendar (%d bytes)", u, len(b)) // a login page or an empty answer must not wipe it
-		}
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b, err := get(u)
+			if err == nil && !strings.Contains(string(b[:min(len(b), 4096)]), "BEGIN:VCALENDAR") {
+				err = fmt.Errorf("%s: not a calendar (%d bytes)", u, len(b)) // a login page or an empty answer must not wipe it
 			}
-			continue // keep the previous copy of this feed
-		}
-		if c.raw[u] != string(b) {
-			c.raw[u], c.memo = string(b), nil
-		}
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return // keep the previous copy of this feed
+			}
+			if c.raw[u] != string(b) {
+				c.raw[u], c.memo = string(b), nil
+			}
+		}()
 	}
+	wg.Wait()
+	beat()
 	return firstErr
 }
 

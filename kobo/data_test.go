@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -328,5 +330,17 @@ func TestEllipsisHuge(t *testing.T) {
 	s := ellipsis(face(false, 22), strings.Repeat("ş", 200000), 300)
 	if time.Since(start) > 2*time.Second || !strings.HasSuffix(s, "…") {
 		t.Fatalf("took %v, %d runes", time.Since(start), len([]rune(s)))
+	}
+}
+
+// A secret ICS link never reaches the log: calendar errors name the host only.
+func TestCalendarErrorHidesLink(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+	defer srv.Close()
+	secret := srv.URL + "/calendar/ical/private-0123456789abcdef/basic.ics"
+	c := Calendar{Feeds: []string{secret}}
+	err := c.Refresh()
+	if err == nil || strings.Contains(err.Error(), "private-0123456789abcdef") {
+		t.Fatalf("error %v", err)
 	}
 }

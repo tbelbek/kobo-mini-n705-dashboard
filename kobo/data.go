@@ -6,10 +6,12 @@ package main
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -793,6 +795,14 @@ type Calendar struct {
 	memo map[string][]Event // per day range asked
 }
 
+// feedHost: what a log line may say about a feed (secret ICS links carry their key in the path).
+func feedHost(u string) string {
+	if p, err := url.Parse(u); err == nil && p.Host != "" {
+		return p.Host + "/…"
+	}
+	return "calendar feed"
+}
+
 func (c *Calendar) Refresh() error {
 	if c.raw == nil {
 		c.raw = map[string]string{}
@@ -811,6 +821,9 @@ func (c *Calendar) Refresh() error {
 			b, err := get(u)
 			if err == nil && !strings.Contains(string(b[:min(len(b), 4096)]), "BEGIN:VCALENDAR") {
 				err = fmt.Errorf("%s: not a calendar (%d bytes)", u, len(b)) // a login page or an empty answer must not wipe it
+			}
+			if err != nil { // a private ICS link is a password: errors name the host only
+				err = errors.New(strings.ReplaceAll(err.Error(), u, feedHost(u)))
 			}
 			mu.Lock()
 			defer mu.Unlock()

@@ -110,7 +110,7 @@ WIFI_IDLE_MIN=1
 QUIET=off
 ```
 
-To try a shorter suspend settle, add `SUSPEND_SETTLE_MS=500` too, and look for `suspend: back to a 2 s settle` in the log: it means the short wait failed on this reader (keep 2000).
+The suspend settle is 500 ms; `suspend: back to a 2 s settle` in the log means the short wait failed on this reader (then set `SUSPEND_SETTLE_MS=2000`). `fast: …` lines in `wifi.log` show the fast connect; `fast connect failed, InkBox's script` means it fell back (`WIFI_CONNECT=inkbox` skips it).
 
 A 3-minute loop shows a dozen wakes in under an hour. Count them:
 

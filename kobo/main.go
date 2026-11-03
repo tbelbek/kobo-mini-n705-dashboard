@@ -55,6 +55,7 @@ type Config struct {
 	AwakeSec      int    // stay awake this long after the last touch / power-button wake
 	SettleMs      int    // wait between state-extended and mem (Kobo's sequence used 2000)
 	WifiSeq       string // "inkbox" = toggle.sh; default KOReader's sequence
+	WifiConnect   string // "inkbox" = InkBox's connect_to_network.sh only; default fastConnect
 	QuietFrom     int    // no timed wakes from this hour...
 	QuietTo       int    // ...until this one (local); equal = no quiet hours
 	KeyInput      string
@@ -81,15 +82,15 @@ func loadConfig(path string) Config {
 		MaxX:          PW,
 		MaxY:          PH,
 		Rotate:        "cw",
-		RefreshMin:    120, // battery first: each wake costs a Wi-Fi association
-		CalRefreshMin: 240,
+		RefreshMin:    180, // battery first: each wake costs a Wi-Fi association
+		CalRefreshMin: 180, // every wake: the fetch runs beside the others, nearly free
 		BattAlert:     20,
 		IdleBackMin:   3,
 		WifiIdleMin:   10,
 		Sleep:         true,
 		AwakeSec:      120,
-		SettleMs:      2000, // Kobo's and KOReader's value; KOReader notes shorter misbehaved. Try less on a device you can reach
-		QuietFrom:     23,   // nobody reads the fridge at night: each skipped wake saves a Wi-Fi association
+		SettleMs:      500, // Kobo and KOReader use 2000; a failed or instant-wake suspend goes back to it by itself
+		QuietFrom:     23,  // nobody reads the fridge at night: each skipped wake saves a Wi-Fi association
 		QuietTo:       6,
 		KeyInput:      "/dev/input/event0",
 		WarnRegion:    "Västra Götaland",
@@ -164,6 +165,8 @@ func loadConfig(path string) Config {
 			c.AwakeSec = int(num)
 		case "WIFI_SEQ": // "inkbox": InkBox's toggle.sh instead of KOReader's sequence
 			c.WifiSeq = v
+		case "WIFI_CONNECT": // "inkbox": InkBox's connect script on every wake, no fast path
+			c.WifiConnect = v
 		case "SUSPEND_SETTLE_MS": // back to 2000 here if short settles turn out to fail on a device
 			if num >= 0 && num <= 10000 {
 				c.SettleMs = int(num)
@@ -486,8 +489,11 @@ func reconnectWifi() {
 	if wifiSeqInkBox {
 		on = `/usr/local/bin/wifi/toggle.sh on; echo "toggle on: $?"; `
 	}
-	cmd := exec.Command("sh", "-c", `trap '' PIPE; . /opt/kobodash/kobodash.conf; `+on+
-		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"; echo "connect: $?"`)
+	connect := fastConnect
+	if wifiConnInkBox {
+		connect = `/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"`
+	}
+	cmd := exec.Command("sh", "-c", `trap '' PIPE; . /opt/kobodash/kobodash.conf; `+on+connect+`; echo "connect: $?"`)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// the scripts' output goes to the card: when a wake gets no address, this is the only trace
 	f := openWifiLog(t0) // card I/O, bounded and kept out of wifiMu: a stuck card must not block Wi-Fi recovery
@@ -727,6 +733,40 @@ const (
 )
 
 var wifiSeqInkBox bool // WIFI_SEQ=inkbox
+
+// fastConnect is InkBox's connect_to_network.sh with what it spends its time on taken
+// out, the way KOReader connects: the hashed passphrase is kept in /run (tmpfs: it
+// survives suspend, not a reboot, and is rebuilt when kobodash.conf changes), the scan is
+// limited to the channel the last connect used, and DHCP starts once wpa_supplicant
+// reports the link up (InkBox starts it at once, and an early DISCOVER is lost for 3 s).
+// The shell, not Go, reads the passphrase: that is how InkBox reads it, quoting and all
+// (a hand-parsed one was why v0.7.8-18's fast path never connected). Anything failing or
+// slow goes back to InkBox's own script, which is what every wake ran before.
+const fastConnect = `umask 077; I=eth0; C=/run/kd-wpa.conf; F=/run/kd-wifi.freq; W="wpa_cli -p /run/wpa_supplicant -i $I"
+fast() {
+	{ [ -s $C ] && [ $C -nt /opt/kobodash/kobodash.conf ]; } ||
+		{ wpa_passphrase "$WIFI_SSID" "$WIFI_PSK" | grep -v '^[[:space:]]*#psk=' > $C.tmp && grep -q '^[[:space:]]*psk=' $C.tmp && mv $C.tmp $C; } || return 1
+	{ grep -v '^}' $C; [ -s $F ] && echo "	scan_freq=$(cat $F)"; echo '}'; } > $C.run
+	rm -f /run/wpa_supplicant/$I
+	wpa_supplicant -D wext -i $I -c $C.run -O /run/wpa_supplicant -B || return 1
+	n=0
+	until $W status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; do
+		n=$((n+1)); [ $n -ge 60 ] && { echo "fast: no link in 15s"; return 1; }
+		usleep 250000
+	done
+	echo "fast: link up"
+	$W status 2>/dev/null | sed -n 's/^freq=//p' > $F.tmp && mv $F.tmp $F
+	timeout 20 udhcpc -i $I -n -t 10 -T 1 || { echo "fast: no lease"; return 1; }
+	/usr/local/bin/timesync.sh
+}
+fast || {
+	echo "fast connect failed, InkBox's script"
+	rm -f $F; killall -q udhcpc wpa_supplicant 2>/dev/null
+	n=0; while pidof wpa_supplicant >/dev/null && [ $n -lt 30 ]; do usleep 100000; n=$((n+1)); done
+	/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"
+}`
+
+var wifiConnInkBox bool // WIFI_CONNECT=inkbox
 
 // runBounded runs a command but gives up waiting after d. A process stuck in the kernel
 // (an e-ink update that never completes, an rmmod) can't be killed, and waiting for it
@@ -993,6 +1033,7 @@ func main() {
 		loc = time.UTC
 	}
 	wifiSeqInkBox = cfg.WifiSeq == "inkbox"
+	wifiConnInkBox = cfg.WifiConnect == "inkbox"
 	a := &App{cfg: cfg, loc: loc, cal: Calendar{Feeds: cfg.Feeds, Holiday: cfg.Holiday}, place: cfg.Place, region: cfg.WarnRegion, wokeBy: "açılış"}
 	if *notify != "" {
 		if !a.telegram(cfg.TgThread, *notify, false) {
@@ -1228,7 +1269,7 @@ func testDone(n int) {
 }
 
 // nextSlot: the timed wake after a refresh at t. Wakes sit on a fixed clock grid
-// (REFRESH_MIN=120: 06:00, 08:00, ... 22:00) so a power-button wake in between doesn't
+// (REFRESH_MIN=180: 06:00, 09:00, ... 21:00) so a power-button wake in between doesn't
 // shift them; a refresh up to 30 min before a slot counts as that slot (a quarter of the
 // interval when that is shorter, so a 3-minute test loop still runs).
 func (a *App) nextSlot(t time.Time) time.Time {
@@ -1274,20 +1315,21 @@ func (a *App) wakeAt(due time.Time) time.Time {
 func (a *App) sleepUntil(due time.Time) string {
 	a.nextWake = due
 	a.home()
-	// draw first, Wi-Fi off last: if anything on the way down hangs or fails, the device
-	// is still reachable instead of awake with its radio off
+	// Wi-Fi off first: the radio is the costliest part of a wake, and drawing needs no
+	// network. If drawing then hangs, the watchdog's first step turns Wi-Fi back on.
 	a.sleeping = true
 	defer func() { a.sleeping = false }()
 	t := time.Now()
-	a.show() // this frame stays on the panel while asleep
-	log.Printf("sleep: drawing took %v", time.Since(t).Round(100*time.Millisecond))
+	wifiDown()
+	log.Printf("sleep: wifi off took %v", time.Since(t).Round(100*time.Millisecond))
 	beat()
 	if holdAwake.Load() { // the watchdog gave up on the way down: stay reachable
+		reconnectWifi()
 		return "error"
 	}
 	t = time.Now()
-	wifiDown()
-	log.Printf("sleep: wifi off took %v", time.Since(t).Round(100*time.Millisecond))
+	a.show() // this frame stays on the panel while asleep
+	log.Printf("sleep: drawing took %v", time.Since(t).Round(100*time.Millisecond))
 	beat()
 	if holdAwake.Load() {
 		reconnectWifi()

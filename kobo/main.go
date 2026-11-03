@@ -776,7 +776,7 @@ var wifiSeqInkBox bool // WIFI_SEQ=inkbox
 const fastConnect = `umask 077; I=eth0; C=/run/kd-wpa.conf; F=/run/kd-wifi.freq; W="wpa_cli -p /run/wpa_supplicant -i $I"
 fast() {
 	{ [ -s $C ] && [ $C -nt /opt/kobodash/kobodash.conf ]; } ||
-		{ wpa_passphrase "$WIFI_SSID" "$WIFI_PSK" | grep -v '^[[:space:]]*#psk=' > $C.tmp && grep -q '^[[:space:]]*psk=' $C.tmp && mv $C.tmp $C; } || return 1
+		{ wpa_passphrase "$WIFI_SSID" "$WIFI_PSK" | grep -v '^[[:space:]]*#psk=' > $C.tmp && grep -q '^[[:space:]]*psk=' $C.tmp && mv $C.tmp $C >/dev/null; } || return 1
 	{ grep -v '^}' $C; [ -s $F ] && echo "	scan_freq=$(cat $F)"; echo '}'; } > $C.run
 	rm -f /run/wpa_supplicant/$I
 	wpa_supplicant -D wext -i $I -c $C.run -O /run/wpa_supplicant -B || return 1
@@ -786,7 +786,7 @@ fast() {
 		usleep 250000
 	done
 	echo "fast: link up"
-	$W status 2>/dev/null | sed -n 's/^freq=//p' > $F.tmp && mv $F.tmp $F
+	$W status 2>/dev/null | sed -n 's/^freq=//p' > $F.tmp && mv $F.tmp $F >/dev/null
 	timeout 20 udhcpc -i $I -n -t 10 -T 1 || { echo "fast: no lease"; return 1; }
 	timeout 30 /usr/local/bin/timesync.sh
 }

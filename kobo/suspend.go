@@ -86,6 +86,10 @@ func suspend(settle time.Duration, abort func() bool) error {
 		os.WriteFile("/sys/power/state-extended", []byte("0"), 0644)
 		return errStayAwake
 	}
+	// udevd still working through the events of the Wi-Fi driver going away stats files on the
+	// FUSE root; once the freezer has stopped the FUSE daemon, that stat never returns, udevd
+	// can't be frozen and the kernel refuses to suspend after 20 s (every "busy" so far, 3 Nov).
+	runBounded(6*time.Second, "udevadm", "settle", "--timeout=5")
 	within(5*time.Second, func() { syscall.Sync() }) // as Nickel and KOReader do: the card settled before the kernel syncs under the freezer
 	err := os.WriteFile("/sys/power/state", []byte("mem"), 0644)
 	os.WriteFile("/sys/power/state-extended", []byte("0"), 0644)

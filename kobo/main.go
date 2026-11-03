@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"image"
@@ -22,6 +23,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,13 +49,14 @@ type Config struct {
 	RefreshMin    int    // weather (and wake-up) interval
 	CalRefreshMin int    // calendar fetch interval
 	IdleBackMin   int
-	WifiIdleMin   int  // keep Wi-Fi up this long after the last touch (and after boot)
-	WifiAlways    bool // never switch the radio off (debugging)
-	Sleep         bool // suspend between refreshes (RTC alarm wakes it, so does the power button)
-	AwakeSec      int  // stay awake this long after the last touch / power-button wake
-	SettleMs      int  // wait between state-extended and mem (Kobo's sequence used 2000)
-	QuietFrom     int  // no timed wakes from this hour...
-	QuietTo       int  // ...until this one (local); equal = no quiet hours
+	WifiIdleMin   int    // keep Wi-Fi up this long after the last touch (and after boot)
+	WifiAlways    bool   // never switch the radio off (debugging)
+	Sleep         bool   // suspend between refreshes (RTC alarm wakes it, so does the power button)
+	AwakeSec      int    // stay awake this long after the last touch / power-button wake
+	SettleMs      int    // wait between state-extended and mem (Kobo's sequence used 2000)
+	WifiSeq       string // "inkbox" = toggle.sh; default KOReader's sequence
+	QuietFrom     int    // no timed wakes from this hour...
+	QuietTo       int    // ...until this one (local); equal = no quiet hours
 	KeyInput      string
 	WarnRegion    string // SMHI county for official warnings
 	WarnSet       bool   // WARN_REGION in the conf: keep it even if the location says otherwise
@@ -159,6 +162,8 @@ func loadConfig(path string) Config {
 			c.Sleep = b
 		case "AWAKE_SEC":
 			c.AwakeSec = int(num)
+		case "WIFI_SEQ": // "inkbox": InkBox's toggle.sh instead of KOReader's sequence
+			c.WifiSeq = v
 		case "SUSPEND_SETTLE_MS": // back to 2000 here if short settles turn out to fail on a device
 			if num >= 0 && num <= 10000 {
 				c.SettleMs = int(num)
@@ -249,6 +254,7 @@ type App struct {
 	settle      time.Duration // the wait before suspend; back to 2 s after a failure
 	busy        bool          // refresh button pressed, fetch in progress
 	keys        chan struct{} // power-button presses
+	lowBattery  bool          // powering off: the frame says so
 	sshSince    time.Time     // first seen the current ssh session (monotonic: awake time)
 	sshExpired  bool
 	reported    string    // day of the last daily report sent by this process
@@ -367,6 +373,9 @@ func (a *App) refresh() {
 	if onDevice() && gotAnswer.Load() {
 		a.maybeDailyReport()
 	}
+	if onDevice() {
+		a.checkBattery()
+	}
 }
 
 // relocate: unless the conf names a place, look the city up from the IP once a day.
@@ -473,7 +482,11 @@ func reconnectWifi() {
 	wifiOffOnPurpose.Store(false)
 	// trap '' PIPE: inherited by every child, so if this process dies (update, crash) while the
 	// backgrounded udhcpc still holds the log pipe, its scripts get EPIPE instead of being killed.
-	cmd := exec.Command("sh", "-c", `trap '' PIPE; . /opt/kobodash/kobodash.conf; /usr/local/bin/wifi/toggle.sh on; echo "toggle on: $?"; `+
+	on := wifiOnScript
+	if wifiSeqInkBox {
+		on = `/usr/local/bin/wifi/toggle.sh on; echo "toggle on: $?"; `
+	}
+	cmd := exec.Command("sh", "-c", `trap '' PIPE; . /opt/kobodash/kobodash.conf; `+on+
 		`/usr/local/bin/wifi/connect_to_network.sh "$WIFI_SSID" "$WIFI_PSK"; echo "connect: $?"`)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// the scripts' output goes to the card: when a wake gets no address, this is the only trace
@@ -683,13 +696,37 @@ func wifiOff() error {
 	wifiMu.Lock()
 	defer wifiMu.Unlock()
 	killConnect()
-	_, err := runBounded(30*time.Second, "/usr/local/bin/wifi/toggle.sh", "off")
+	off := []string{"sh", "-c", wifiOffScript}
+	if wifiSeqInkBox {
+		off = []string{"/usr/local/bin/wifi/toggle.sh", "off"}
+	}
+	_, err := runBounded(30*time.Second, off[0], off[1:]...)
 	offFailed.Store(err != nil)
 	if err != nil {
 		log.Printf("wifi off: %v", err)
 	}
 	return err
 }
+
+// Wi-Fi power up and down, the way KOReader does it on these Kobos (platform/kobo/
+// enable-wifi.sh, disable-wifi.sh), with its waits. InkBox's toggle.sh loads dhd straight
+// after the power module, before the SDIO card is detected, which is why every wake's
+// kernel log has "dongle image file download failed"; and it unloads the power module
+// straight after dhd, which KOReader found hangs a Glo HD (#2394). WIFI_SEQ=inkbox goes
+// back to toggle.sh.
+const (
+	wifiOnScript = `grep -q '^sdio_wifi_pwr ' /proc/modules || insmod /modules/sdio_wifi_pwr.ko; sleep 0.25; ` +
+		`grep -q '^dhd ' /proc/modules || insmod /modules/dhd.ko; sleep 1; ` + // "Race-y as hell, don't try to optimize this!"
+		`ifconfig eth0 up; wlarm_le up; echo "wifi on: $?"; `
+	wifiOffScript = `killall -q connect_to_network.sh udhcpc 2>/dev/null; wpa_cli -i eth0 terminate >/dev/null 2>&1; ` +
+		`killall -q wpa_supplicant 2>/dev/null; wlarm_le down >/dev/null 2>&1; ip addr flush dev eth0 2>/dev/null; ` +
+		`ifconfig eth0 down 2>/dev/null; sleep 0.25; ` +
+		`grep -q '^dhd ' /proc/modules && rmmod dhd; sleep 0.25; ` + // dhd fully gone before its power goes
+		`grep -q '^sdio_wifi_pwr ' /proc/modules && rmmod sdio_wifi_pwr; ` +
+		`rm -f /run/connect_to_network.sh.pid; true`
+)
+
+var wifiSeqInkBox bool // WIFI_SEQ=inkbox
 
 // runBounded runs a command but gives up waiting after d. A process stuck in the kernel
 // (an e-ink update that never completes, an rmmod) can't be killed, and waiting for it
@@ -955,6 +992,7 @@ func main() {
 	if err != nil {
 		loc = time.UTC
 	}
+	wifiSeqInkBox = cfg.WifiSeq == "inkbox"
 	a := &App{cfg: cfg, loc: loc, cal: Calendar{Feeds: cfg.Feeds, Holiday: cfg.Holiday}, place: cfg.Place, region: cfg.WarnRegion, wokeBy: "açılış"}
 	if *notify != "" {
 		if !a.telegram(cfg.TgThread, *notify, false) {
@@ -1216,7 +1254,7 @@ func (a *App) sleepUntil(due time.Time) string {
 		a.show() // the frame says "sonraki HH:MM": the 30 s floor or the cap moved it
 	}
 	a.nextWake = due
-	if err := setWakeAlarm(d); err != nil {
+	if err := armAlarm(d); err != nil {
 		log.Printf("alarm: %v", err) // never suspend without a way back
 		awakeAfterFailedSleep()
 		return "error"
@@ -1243,7 +1281,16 @@ func (a *App) sleepUntil(due time.Time) string {
 		settle = max(settle, 2*time.Second)
 	}
 	key0, usb0 := wakeIRQs(readProc("/proc/interrupts"))
-	if err := suspend(settle, pressed); err == errStayAwake {
+	// Nickel retries a refused suspend every ~4 s (KOReader: "ought to be -EBUSY, usually
+	// because of the EPDC or touch panel"): a few quick tries before the failure path,
+	// which keeps the device up for AWAKE_SEC with Wi-Fi on
+	err := suspend(settle, pressed)
+	for try := 2; err != nil && err != errStayAwake && errors.Is(err, syscall.EBUSY) && try <= 3; try++ {
+		log.Printf("suspend: %v, trying again (%d/3)", err, try)
+		time.Sleep(4 * time.Second)
+		err = suspend(settle, pressed)
+	}
+	if err == errStayAwake {
 		log.Printf("sleep: power button pressed on the way down, staying awake")
 		reconnectWifi()
 		return "button"
@@ -1269,6 +1316,48 @@ func (a *App) sleepUntil(due time.Time) string {
 	woke := wokeBy(time.Now().Round(0).After(due.Add(-15*time.Second)), key0, usb0, key1, usb1)
 	log.Printf("woke: %s after %v %s", woke, time.Now().Round(0).Sub(start).Round(time.Second), battery())
 	return woke
+}
+
+// armAlarm sets the RTC alarm and checks the kernel took it. The MSP430 driver reports
+// success even when it dropped the alarm (a target not ahead of its own clock clears it),
+// and reads it back as a flag; its "msp430_setalarm ... alarm N" line, N the seconds it
+// counts down, is the only proof. Without it, sleeping would mean sleeping until someone
+// presses the button. A marker written to the kernel log first finds the line that
+// belongs to this call, however much of the ring buffer has rolled over.
+func armAlarm(d time.Duration) error {
+	marker := fmt.Sprintf("kobodash: arming alarm %d", time.Now().UnixNano())
+	marked := onDevice() && os.WriteFile("/dev/kmsg", []byte(marker+"\n"), 0) == nil
+	if err := setWakeAlarm(d); err != nil {
+		return err
+	}
+	if !marked {
+		return nil // nothing to check against
+	}
+	out, err := runBounded(5*time.Second, "dmesg")
+	if err != nil {
+		return nil
+	}
+	return alarmTaken(string(out), marker, d)
+}
+
+var alarmLine = regexp.MustCompile(`msp430_setalarm-\d+\] alarm (\d+)`)
+
+// alarmTaken: after marker, an "alarm N" line with N within 10 s of d. A kernel that
+// logs no such lines at all (another build) can't be checked and is trusted.
+func alarmTaken(log, marker string, d time.Duration) error {
+	i := strings.LastIndex(log, marker)
+	if i < 0 || !alarmLine.MatchString(log) {
+		return nil
+	}
+	m := alarmLine.FindStringSubmatch(log[i:])
+	if m == nil {
+		return fmt.Errorf("the kernel logged no alarm: not suspending")
+	}
+	n, _ := strconv.Atoi(m[1])
+	if diff := time.Duration(n)*time.Second - d; diff < -10*time.Second || diff > 10*time.Second {
+		return fmt.Errorf("the kernel set the alarm %d s ahead, asked %v: not suspending", n, d.Round(time.Second))
+	}
+	return nil
 }
 
 // wakeIRQs sums /proc/interrupts by what can wake the Mini: the power key, and the charger

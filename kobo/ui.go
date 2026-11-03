@@ -213,6 +213,11 @@ func (a *App) render() *image.Gray {
 	img := image.NewGray(image.Rect(0, 0, W, H))
 	fill(img, img.Bounds(), white)
 	a.hits = nil
+	if a.lowBattery { // the last frame before power off: say why the screen is frozen
+		centerText(img, "Pil bitti", face(true, 64), W/2, H/2-20)
+		centerText(img, "şarja tak, sonra güç tuşuna uzun bas", face(false, 28), W/2, H/2+40)
+		return img
+	}
 	a.drawMain(img)
 	return img
 }

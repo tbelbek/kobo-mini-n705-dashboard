@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+
+description="InkBox battery watchdog (disabled: kobodash's own check doesn't power off on one bad reading)"
+
+depend() {
+	keyword -prefix -lxc
+}
+
+start() {
+	return 0
+}

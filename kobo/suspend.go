@@ -86,6 +86,7 @@ func suspend(settle time.Duration, abort func() bool) error {
 		os.WriteFile("/sys/power/state-extended", []byte("0"), 0644)
 		return errStayAwake
 	}
+	within(5*time.Second, func() { syscall.Sync() }) // as Nickel and KOReader do: the card settled before the kernel syncs under the freezer
 	err := os.WriteFile("/sys/power/state", []byte("mem"), 0644)
 	os.WriteFile("/sys/power/state-extended", []byte("0"), 0644)
 	return err

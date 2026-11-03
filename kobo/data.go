@@ -142,11 +142,11 @@ func fetchSMHI(p Place, hours int) (*Weather, error) {
 		TimeSeries []struct {
 			Time time.Time `json:"time"`
 			Data struct {
-				Temp   float64 `json:"air_temperature"`
-				Wind   float64 `json:"wind_speed"` // m/s
-				Dir    float64 `json:"wind_from_direction"`
-				RH     float64 `json:"relative_humidity"`
-				Symbol int     `json:"symbol_code"`
+				Temp   *float64 `json:"air_temperature"` // nil: missing, not 0 °C
+				Wind   float64  `json:"wind_speed"`      // m/s
+				Dir    float64  `json:"wind_from_direction"`
+				RH     float64  `json:"relative_humidity"`
+				Symbol int      `json:"symbol_code"`
 			} `json:"data"`
 		} `json:"timeSeries"`
 	}
@@ -169,15 +169,19 @@ func fetchSMHI(p Place, hours int) (*Weather, error) {
 	ymd := day.Format("2006-01-02")
 	n := 0
 	for _, t := range r.TimeSeries {
-		if t.Time.Before(from) {
+		if t.Time.Before(from) || t.Data.Temp == nil {
 			continue
 		}
+		temp := *t.Data.Temp
+		if len(h.Time) == 0 && t.Time.Sub(now) > 3*time.Hour { // "now" from a forecast hours ahead
+			return nil, fmt.Errorf("smhi: forecast starts %s", t.Time.Format("01-02 15:04"))
+		}
 		if t.Time.In(loc).Format("2006-01-02") == ymd {
-			if n == 0 || t.Data.Temp < w.Lo {
-				w.Lo = t.Data.Temp
+			if n == 0 || temp < w.Lo {
+				w.Lo = temp
 			}
-			if n == 0 || t.Data.Temp > w.Hi {
-				w.Hi = t.Data.Temp
+			if n == 0 || temp > w.Hi {
+				w.Hi = temp
 			}
 			n++
 		}
@@ -189,10 +193,10 @@ func fetchSMHI(p Place, hours int) (*Weather, error) {
 		if d.Symbol > 0 && d.Symbol < len(smhiWMO) {
 			code = smhiWMO[d.Symbol]
 		}
-		e := d.RH / 100 * 6.105 * math.Exp(17.27*d.Temp/(237.7+d.Temp))
+		e := d.RH / 100 * 6.105 * math.Exp(17.27*temp/(237.7+temp))
 		h.Time = append(h.Time, t.Time.In(loc).Format("2006-01-02T15:04"))
-		h.Temp = append(h.Temp, d.Temp)
-		h.Feels = append(h.Feels, d.Temp+0.33*e-0.70*d.Wind-4.00)
+		h.Temp = append(h.Temp, temp)
+		h.Feels = append(h.Feels, temp+0.33*e-0.70*d.Wind-4.00)
 		h.Code = append(h.Code, code)
 		h.Wind = append(h.Wind, d.Wind*3.6)
 		h.WindDir = append(h.WindDir, d.Dir)
@@ -250,8 +254,21 @@ func compass(deg float64) string {
 // ---------------------------------------------------------------- official warnings (SMHI)
 
 type Warning struct {
-	Level string // YELLOW | ORANGE | RED
-	Text  string // reason, in Turkish when known
+	Level string    // YELLOW | ORANGE | RED
+	Text  string    // reason, in Turkish when known
+	End   time.Time // SMHI's approximate end; zero = open-ended
+}
+
+// current drops the warnings that have ended: a list kept through failed fetches must not
+// show a storm that was over days ago.
+func current(ws []Warning, now time.Time) []Warning {
+	var out []Warning
+	for _, w := range ws {
+		if w.End.IsZero() || w.End.After(now) {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 var warnLabel = map[string]string{"YELLOW": "Sarı", "ORANGE": "Turuncu", "RED": "Kırmızı"}
@@ -322,7 +339,10 @@ func fetchWarnings(region string) ([]Warning, error) {
 			if rank[a.WarningLevel.Code] == 0 {
 				continue
 			}
-			if end, err := time.Parse(time.RFC3339, a.ApproximateEnd); err == nil && end.Before(time.Now()) {
+			end, err := time.Parse(time.RFC3339, a.ApproximateEnd)
+			if err != nil {
+				end = time.Time{}
+			} else if end.Before(time.Now()) {
 				continue
 			}
 			hit := false
@@ -333,7 +353,7 @@ func fetchWarnings(region string) ([]Warning, error) {
 			key := a.WarningLevel.Code + reason
 			if hit && !seen[key] {
 				seen[key] = true
-				out = append(out, Warning{a.WarningLevel.Code, reason})
+				out = append(out, Warning{a.WarningLevel.Code, reason, end})
 			}
 		}
 	}
@@ -355,6 +375,7 @@ type Event struct {
 	Start   time.Time // display location; all-day events at midnight
 	AllDay  bool
 	Last    time.Time // last day the event covers (midnight)
+	End     time.Time // when a timed event ends (its start if it gave none)
 	Summary string
 	Loc     string
 	Desc    string
@@ -497,9 +518,18 @@ func expand(base time.Time, rule map[string]string, lo, hi time.Time, loc *time.
 	if c, err := strconv.Atoi(rule["COUNT"]); err == nil {
 		count = c
 	}
+	// UNTIL: a date (that whole day counts) or a date-time, UTC with Z, else in the start's zone
 	var until time.Time
-	if u := rule["UNTIL"]; len(u) >= 8 {
-		until, _ = time.ParseInLocation("20060102", u[:8], loc)
+	if u := rule["UNTIL"]; len(u) >= 15 {
+		z := base.Location()
+		if strings.HasSuffix(u, "Z") {
+			z = time.UTC
+		}
+		until, _ = time.ParseInLocation("20060102T150405", strings.TrimSuffix(u, "Z"), z)
+	} else if len(u) >= 8 {
+		if d, err := time.ParseInLocation("20060102", u[:8], loc); err == nil {
+			until = d.AddDate(0, 0, 1).Add(-time.Second)
+		}
 	}
 	z := base.Location()
 	at := func(y int, m time.Month, d int) time.Time {
@@ -587,7 +617,9 @@ func expand(base time.Time, rule map[string]string, lo, hi time.Time, loc *time.
 	}
 	var out []time.Time
 	n := 0
-	for limit := k + 5000; k < limit; k++ { // bounded: a window is months, not thousands of periods
+	// bounded: a window is months, not thousands of periods (a counted series is walked from its
+	// start, so it gets as many periods as it counts)
+	for limit := k + max(5000, min(count, 200000)); k < limit; k++ {
 		pstart, occ := period(k)
 		if midnight(pstart, loc).After(hi) {
 			break
@@ -597,7 +629,7 @@ func expand(base time.Time, rule map[string]string, lo, hi time.Time, loc *time.
 				continue
 			}
 			d := midnight(o, loc)
-			if (!until.IsZero() && d.After(until)) || (count >= 0 && n >= count) || d.After(hi) {
+			if (!until.IsZero() && o.After(until)) || (count >= 0 && n >= count) || d.After(hi) {
 				return out
 			}
 			n++
@@ -695,6 +727,10 @@ func buildEvents(p map[string]string, params map[string]map[string]string, lo, h
 		}
 	}
 	span := spanDays(start, end, allDay, hasEnd, loc)
+	var dur time.Duration // carried to every occurrence
+	if hasEnd && !allDay && end.After(start) {
+		dur = end.Sub(start)
+	}
 	summary := unescapeICS(p["SUMMARY"])
 	if summary == "" {
 		summary = "(başlıksız)"
@@ -735,7 +771,7 @@ func buildEvents(p map[string]string, params map[string]map[string]string, lo, h
 		d := midnight(s, loc)
 		last := d.AddDate(0, 0, span)
 		if !d.After(hi) && !last.Before(lo) {
-			out = append(out, Event{Start: s.In(loc), AllDay: allDay, Last: last, Summary: summary,
+			out = append(out, Event{Start: s.In(loc), End: s.Add(dur).In(loc), AllDay: allDay, Last: last, Summary: summary,
 				Loc: unescapeICS(p["LOCATION"]), Desc: unescapeICS(p["DESCRIPTION"]), Tag: "cal"})
 		}
 	}

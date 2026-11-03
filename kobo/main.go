@@ -337,7 +337,8 @@ func (a *App) refresh() {
 	if warnErr == nil {
 		a.warnings = ws
 	} else {
-		log.Printf("warnings: %v", warnErr) // keep the last known list
+		log.Printf("warnings: %v", warnErr) // keep the last known list, minus those that ended
+		a.warnings = current(a.warnings, time.Now())
 	}
 	if cal {
 		if calErr != nil {
@@ -919,7 +920,7 @@ func main() {
 		}
 		a.refresh()
 		if *fakeWarn {
-			a.warnings = []Warning{{"ORANGE", reasonTR("Rain")}, {"YELLOW", reasonTR("Wind")}}
+			a.warnings = []Warning{{"ORANGE", reasonTR("Rain"), time.Time{}}, {"YELLOW", reasonTR("Wind"), time.Time{}}}
 			fakeBattery = "pil %85"
 		}
 		a.home()

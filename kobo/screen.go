@@ -56,7 +56,7 @@ func (a *App) horizon(from time.Time, n int) []calDay {
 		days[i].Day = first.AddDate(0, 0, i)
 	}
 	for _, e := range a.cal.Events(first, first.AddDate(0, 0, n-1), a.loc) {
-		if !e.AllDay && !e.Multi() && e.Day().Equal(first) && e.Start.Before(from) {
+		if !e.AllDay && !e.Multi() && e.Day().Equal(first) && e.End.Before(from) { // still on: keep it
 			continue
 		}
 		for i := range days {

@@ -219,6 +219,8 @@ func TestICSRecurrence(t *testing.T) {
 			"2026-11-06", "2026-11-10", []string{"11-06 08:00", "11-09 08:00", "11-10 08:00"}},
 		{"absurd nth weekday doesn't crash", ev("DTSTART;TZID=Europe/Stockholm:20261102T090000\nRRULE:FREQ=MONTHLY;BYDAY=-2147483648MO\nSUMMARY:x"),
 			"2026-11-01", "2026-12-31", nil},
+		{"UNTIL keeps its time", ev("DTSTART:20261102T180000Z\nRRULE:FREQ=DAILY;UNTIL=20261104T090000Z\nSUMMARY:x"),
+			"2026-11-01", "2026-11-10", []string{"11-02 19:00", "11-03 19:00"}},
 		{"31st skips short months", ev("DTSTART;VALUE=DATE:20270131\nRRULE:FREQ=MONTHLY\nSUMMARY:x"),
 			"2027-01-01", "2027-05-31", []string{"01-31 00:00", "03-31 00:00", "05-31 00:00"}},
 		{"UTC start keeps UTC across DST", ev("DTSTART:20260901T080000Z\nRRULE:FREQ=WEEKLY\nSUMMARY:x"),
@@ -292,5 +294,39 @@ func TestRefreshKeepsGoodFeed(t *testing.T) {
 	}
 	if c.raw["file://"+f] != good {
 		t.Error("the good copy was replaced")
+	}
+}
+
+// A meeting that started before now but is still on stays in today's list.
+func TestHorizonKeepsOngoing(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	raw := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;TZID=Europe/Stockholm:20261103T090000\r\n" +
+		"DTEND;TZID=Europe/Stockholm:20261103T120000\r\nSUMMARY:Toplanti\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Stockholm:20261103T080000\r\nDTEND;TZID=Europe/Stockholm:20261103T083000\r\nSUMMARY:Bitti\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	f := t.TempDir() + "/a.ics"
+	os.WriteFile(f, []byte(raw), 0o644)
+	a := &App{loc: loc, cal: Calendar{Feeds: []string{"file://" + f}}}
+	a.cal.Refresh()
+	days := a.horizon(time.Date(2026, 11, 3, 10, 0, 0, 0, loc), 1)
+	if len(days[0].Evs) != 1 || days[0].Evs[0].Summary != "Toplanti" {
+		t.Fatalf("today at 10:00: %+v", days[0].Evs)
+	}
+}
+
+// A warning that has ended is dropped from a kept list.
+func TestCurrentWarnings(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	ws := []Warning{{"RED", "a", now.Add(-time.Hour)}, {"YELLOW", "b", now.Add(time.Hour)}, {"ORANGE", "c", time.Time{}}}
+	if got := current(ws, now); len(got) != 2 || got[0].Text != "b" || got[1].Text != "c" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// A huge title is cut before measuring: drawing it stays fast.
+func TestEllipsisHuge(t *testing.T) {
+	start := time.Now()
+	s := ellipsis(face(false, 22), strings.Repeat("ş", 200000), 300)
+	if time.Since(start) > 2*time.Second || !strings.HasSuffix(s, "…") {
+		t.Fatalf("took %v, %d runes", time.Since(start), len([]rune(s)))
 	}
 }

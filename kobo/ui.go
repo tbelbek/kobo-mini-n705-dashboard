@@ -72,6 +72,9 @@ func text(dst draw.Image, x, baseline int, s string, f font.Face, c color.Color)
 func textW(f font.Face, s string) int { return font.MeasureString(f, s).Round() }
 
 func ellipsis(f font.Face, s string, w int) string {
+	if r := []rune(s); len(r) > 200 { // nothing that long fits a line; measuring it all is slow
+		s = string(r[:200])
+	}
 	if textW(f, s) <= w {
 		return s
 	}

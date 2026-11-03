@@ -81,11 +81,11 @@ In `wifi.log`, each line is stamped `+ 2.31s` from the start of the connect: the
 
 ## Back to normal
 
-Look for the process, not the pid file (by its command line: its `comm` is just `sh`; print pids only, never a command line, the connect script's carries the Wi-Fi password): right after boot (and the card mounts a minute or so in) the file isn't there yet while supervise already runs, and a second supervise means a second kobodash. On 3 Nov exactly that had two of them fighting over Wi-Fi and the update. kobodash now waits while an older healthy one runs, but don't start a second supervise.
+Look for the process, not the pid file (by its command line, parent init: its `comm` is just `sh`, and its own short-lived subshells share the command line; print pids only, never a command line, the connect script's carries the Wi-Fi password): right after boot (and the card mounts a minute or so in) the file isn't there yet while supervise already runs, and a second supervise means a second kobodash. On 3 Nov exactly that had two of them fighting over Wi-Fi and the update. kobodash now waits while an older healthy one runs, but don't start a second supervise.
 
 ```bash
 ssh $DEV 'up=$(cut -d. -f1 /proc/uptime); n=0
-  for p in /proc/[0-9]*; do grep -q "supervise\.sh" $p/cmdline 2>/dev/null && n=$((n+1)) && echo "supervise ${p#/proc/}"; done
+  for p in /proc/[0-9]*; do grep -q "supervise\.sh" $p/cmdline 2>/dev/null && [ "$(sed "s/.*) //" $p/stat | cut -d" " -f2)" = 1 ] && n=$((n+1)) && echo "supervise ${p#/proc/}"; done
   if [ $n -eq 0 ] && [ $up -gt 180 ]; then
     killall kobodash; sleep 2
     nohup /bin/sh /opt/kobodash/supervise.sh >/dev/null 2>&1 </dev/null &

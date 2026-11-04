@@ -226,8 +226,9 @@ func setPlace(p *Place, k, v string, num float64) {
 
 type App struct {
 	cfg     Config
-	shown   []byte // pixels on the panel now: an identical frame isn't redrawn
-	wokeBy  string // what started this refresh: timer, button, touch, boot
+	shown   []byte   // pixels on the panel now: an identical frame isn't redrawn
+	wokeBy  string   // what started this refresh: timer, button, touch, boot
+	unsent  []string // wake reports Telegram didn't take: sent with the next one
 	loc     *time.Location
 	cal     Calendar
 	wDetail *Weather
@@ -1719,7 +1720,15 @@ func (a *App) wakeReport(wifi time.Duration) {
 	}
 	msg := fmt.Sprintf("Kobo pano %s · uyanış: %s · %s · Wi-Fi %v",
 		version, a.wokeBy, battery(), wifi.Round(100*time.Millisecond))
-	a.telegram(a.cfg.TgLogThread, msg, true)
+	text := msg
+	for _, u := range a.unsent { // a wake whose line never arrived still shows up, late
+		text += "\n" + u
+	}
+	if a.telegram(a.cfg.TgLogThread, text, true) {
+		a.unsent = nil
+	} else if len(a.unsent) < 8 { // bounded: a long outage keeps the first few, not every one
+		a.unsent = append(a.unsent, clock().In(a.loc).Format("15:04")+" gönderilemedi: "+msg)
+	}
 }
 
 const battDir = "/sys/class/power_supply/mc13892_bat/"

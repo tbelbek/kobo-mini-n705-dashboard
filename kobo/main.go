@@ -1177,6 +1177,7 @@ func main() {
 	a.show()
 	tick := time.NewTicker(10 * time.Second)
 	lastTouch, lastTry, resumed := time.Now(), time.Now(), time.Time{}
+	retries := 0 // after a failed weather or calendar fetch; maxRetries, then the next slot
 	if up, _ := strconv.ParseFloat(strings.Fields(readProc("/proc/uptime") + " 0")[0], 64); up > 600 {
 		// not a boot: a restart (crash, watchdog, deploy) with likely nobody looking; don't
 		// stay up two minutes with Wi-Fi on, sleep once the refresh is done
@@ -1229,8 +1230,13 @@ func main() {
 				a.show()
 			}
 			due := !time.Now().Before(a.nextSlot(a.updated))
-			retry := (a.wErr != nil || a.calFailed) && time.Since(lastTry) >= time.Minute
+			retry := (a.wErr != nil || a.calFailed) && retries < maxRetries && time.Since(lastTry) >= time.Minute
 			if due || retry {
+				if due {
+					retries = 0
+				} else {
+					retries++
+				}
 				if due && onCharger() {
 					log.Printf("slot: on the charger, awake %s", battery()) // the report counts it as a timed wake
 				}
@@ -1289,7 +1295,7 @@ func main() {
 				// lastTouch from before the sleep still looks recent (monotonic time stopped while
 				// asleep): forget it, or a tap just before a press-to-sleep keeps this wake up 2 min
 				lastTouch = time.Time{}
-				lastTry = time.Now()
+				lastTry, retries = time.Now(), 0
 				a.refresh()
 				if a.sshHold() || a.wifiPinned || holdAwake.Load() {
 					a.show() // it won't go straight back down, so show the new data now
@@ -1310,6 +1316,10 @@ func main() {
 		}
 	}
 }
+
+// maxRetries: a failed fetch is tried again a minute apart this many times while awake; a
+// fault on the far side (a service down, a feed gone) mustn't keep the radio busy all day.
+const maxRetries = 3
 
 // A sleep test without anyone at the device: the card file test-cycles holds N, and the next
 // N sleeps last testEvery each (on the charger too, quiet hours or not), each wake doing

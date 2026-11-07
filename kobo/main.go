@@ -1186,7 +1186,9 @@ func main() {
 				a.telegram(cfg.TgLogThread, "Kobo pano güncellendi: "+string(updated)+" · çalışıyor, uyuyor", true)
 			}
 			lastTouch = time.Time{}
-			keys <- struct{}{} // wakes the select below, whose power-key branch puts it to sleep
+			if !onCharger() { // on the charger it stays up, as after any other wake
+				keys <- struct{}{} // wakes the select below, whose power-key branch puts it to sleep
+			}
 		} else if cfg.TgLogThread != "" {
 			a.telegram(cfg.TgLogThread, "Kobo pano güncellendi: "+string(updated)+" · ama: "+a.wErr.Error(), true)
 		}

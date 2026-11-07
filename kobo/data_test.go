@@ -344,3 +344,28 @@ func TestCalendarErrorHidesLink(t *testing.T) {
 		t.Fatalf("error %v", err)
 	}
 }
+
+func TestCalendarCardCopy(t *testing.T) {
+	up := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up {
+			http.Error(w, "down", 500)
+			return
+		}
+		fmt.Fprint(w, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+	}))
+	defer srv.Close()
+	u := srv.URL + "/secret.ics"
+	defer os.Remove(feedCache(u))
+	if err := (&Calendar{Feeds: []string{u}}).Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	up = false // a boot with the network not there yet: the card's copy, not an empty calendar
+	c := &Calendar{Feeds: []string{u}}
+	if err := c.Refresh(); err == nil {
+		t.Fatal("no error from a failing feed")
+	}
+	if !strings.Contains(c.raw[u], "BEGIN:VCALENDAR") {
+		t.Fatal("card copy not loaded")
+	}
+}

@@ -249,6 +249,7 @@ type App struct {
 	warnings    []Warning
 	calUpdated  time.Time
 	forceCal    bool // refresh button: fetch calendars too, not just weather
+	calFailed   bool // the last calendar fetch failed: retried like the weather
 	wifiPinned  bool // switched on by hand: stays up until tapped again, or pinLease
 	pinnedAt    time.Time
 	skipWake    bool          // this tap switched Wi-Fi off; don't let it wake the radio again
@@ -368,7 +369,9 @@ func (a *App) refresh() {
 	if cal {
 		if calErr != nil {
 			log.Printf("calendar: %v", calErr)
-		} else {
+		}
+		a.calFailed = calErr != nil
+		if calErr == nil {
 			a.calUpdated = time.Now().Round(0)
 		}
 		a.forceCal = false
@@ -1226,7 +1229,7 @@ func main() {
 				a.show()
 			}
 			due := !time.Now().Before(a.nextSlot(a.updated))
-			retry := a.wErr != nil && time.Since(lastTry) >= time.Minute
+			retry := (a.wErr != nil || a.calFailed) && time.Since(lastTry) >= time.Minute
 			if due || retry {
 				if due && onCharger() {
 					log.Printf("slot: on the charger, awake %s", battery()) // the report counts it as a timed wake

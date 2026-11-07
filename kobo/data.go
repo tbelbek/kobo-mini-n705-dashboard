@@ -5,6 +5,8 @@ package main
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -803,9 +805,23 @@ func feedHost(u string) string {
 	return "calendar feed"
 }
 
+// feedCache: the card file a feed is kept in, named by a hash (the link is a password).
+func feedCache(u string) string {
+	if u == "" || stateFile("") == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte(u))
+	return stateFile("cal-" + hex.EncodeToString(h[:6]) + ".ics")
+}
+
 func (c *Calendar) Refresh() error {
-	if c.raw == nil {
+	if c.raw == nil { // first refresh: start from the card's copies, so a failed fetch after a boot isn't an empty calendar
 		c.raw = map[string]string{}
+		for _, u := range append(append([]string{}, c.Feeds...), c.Holiday) {
+			if b, err := os.ReadFile(feedCache(u)); u != "" && err == nil && len(b) > 0 {
+				c.raw[u] = string(b)
+			}
+		}
 	}
 	// side by side: every second here is a second of Wi-Fi radio
 	var mu sync.Mutex
@@ -835,6 +851,9 @@ func (c *Calendar) Refresh() error {
 			}
 			if c.raw[u] != string(b) {
 				c.raw[u], c.memo = string(b), nil
+				if p := feedCache(u); p != "" {
+					writeAtomic(p, string(b))
+				}
 			}
 		}()
 	}

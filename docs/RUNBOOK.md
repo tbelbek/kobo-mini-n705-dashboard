@@ -107,6 +107,18 @@ ssh $DEV 'echo 10 > /tmp/p3/rootfs/write/opt/kobodash/test-cycles'
 
 The next 10 sleeps last 3 minutes each, on the charger too, and each wake does the full Wi-Fi and refresh round. The log shows `test: cycle done, N left` per wake. The file goes after the last cycle, or after 30 minutes without a timed wake. Keep ssh closed meanwhile: an open session keeps it awake.
 
+**Wi-Fi unload stress test** (the dhd rmmod deadlock; on the charger only, ends by itself). One phase per line, `<cycles> <dhd module args or ->`; A first, so the rig is seen to reproduce the hang at all:
+
+```bash
+ssh $DEV 'printf "300 -\n600 dhd_watchdog_ms=60000\n" > /tmp/p3/rootfs/write/opt/kobodash/wifi-stress'
+```
+
+Each cycle: Wi-Fi off (rmmod dhd), on with the phase's args, wait for an address, 2 s of traffic, ~10 s in all. Results in `wifi-stress.log` next to it, one line per step: `unload <args it was loaded with> ok|left|hang` and `load <args> ok|noip <seconds> wd=<dhd_watchdog CPU ticks>` (`wd=0` with the large value: the watchdog never ran). A hang logs the blocked tasks' kernel stacks (sysrq w) to `suspend-fail.log` and reboots at once, outside the daily budget; the test carries on after the boot. Pulling the charger pauses it; it ends after the last cycle, after 30 min without a cycle, after 5 loads in a row without an address (a rejected module parameter), or with `WIFI_SEQ=inkbox`. Count:
+
+```bash
+ssh $DEV 'cd /tmp/p3/rootfs/write/opt/kobodash; awk "{print \$2, \$3, \$4}" wifi-stress.log | sort | uniq -c'
+```
+
 For longer experiments, append to `/opt/kobodash/dash.conf` (later keys win), restart kobodash (not supervise: `killall kobodash`), and delete the lines when done:
 
 ```

@@ -496,6 +496,7 @@ func reconnectWifi() {
 	}
 	cmd := exec.Command("sh", "-c", `trap '' PIPE; . /opt/kobodash/kobodash.conf; `+on+connect+`; echo "connect: $?"`)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = append(os.Environ(), "KD_DHD="+dhdArgs.Load().(string)) // checked against dhdArgsOK
 	// the scripts' output goes to the card: when a wake gets no address, this is the only trace
 	f := openWifiLog(t0) // card I/O, bounded and kept out of wifiMu: a stuck card must not block Wi-Fi recovery
 	// Each line is stamped with seconds since t0, to show which step (module, scan, DHCP)
@@ -698,6 +699,7 @@ func wifiDown() {
 	}
 	if stuckInDriver() { // never clears: reboot now rather than climb the ladder for 15 min
 		log.Printf("wifi off: rmmod stuck in the Wi-Fi driver (its unload deadlock)")
+		dumpBlocked()
 		kernelLog()
 		rebootDevice("rmmod stuck in the Wi-Fi driver", false, true)
 		return
@@ -785,7 +787,7 @@ func wifiOff() error {
 // back to toggle.sh.
 const (
 	wifiOnScript = `grep -q '^sdio_wifi_pwr ' /proc/modules || insmod /modules/sdio_wifi_pwr.ko; sleep 0.25; ` +
-		`grep -q '^dhd ' /proc/modules || insmod /modules/dhd.ko; sleep 1; ` + // "Race-y as hell, don't try to optimize this!"
+		`grep -q '^dhd ' /proc/modules || insmod /modules/dhd.ko $KD_DHD; sleep 1; ` + // "Race-y as hell, don't try to optimize this!"
 		`ifconfig eth0 up; wlarm_le up; echo "wifi on: $?"; `
 	// timesync.sh first: the connect script runs it, and killing the script leaves its
 	// ntpdate sending on an interface that is going away (seen in wifi.log on 3 Nov).
@@ -1215,6 +1217,8 @@ func main() {
 				reconnectWifi() // a touch opens a Wi-Fi window (ssh, refresh) without blocking the UI
 			}
 		case <-tick.C:
+			for i := 0; i < 30 && onCharger() && stressCycle(); i++ { // the Wi-Fi stress test, if one is set
+			}
 			if !a.atHome() && time.Since(lastTouch) > time.Duration(cfg.IdleBackMin)*time.Minute {
 				a.home() // nobody is looking: back to today
 				a.show()

@@ -107,6 +107,8 @@ ssh $DEV 'echo 10 > /tmp/p3/rootfs/write/opt/kobodash/test-cycles'
 
 The next 10 sleeps last 3 minutes each, on the charger too, and each wake does the full Wi-Fi and refresh round. The log shows `test: cycle done, N left` per wake. The file goes after the last cycle, or after 30 minutes without a timed wake. Keep ssh closed meanwhile: an open session keeps it awake.
 
+dhd loads with `dhd_watchdog_ms=60000` by default (the unload-deadlock fix, see `kobo/stress.go`); a phase's `-` loads it without, as before.
+
 **Wi-Fi unload stress test** (the dhd rmmod deadlock; on the charger only, ends by itself). One phase per line, `<cycles> <dhd module args or ->`; A first, so the rig is seen to reproduce the hang at all:
 
 ```bash

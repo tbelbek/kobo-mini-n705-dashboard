@@ -24,7 +24,15 @@ import (
 // dhdArgs: module parameters for the next insmod of dhd (wifiOnScript's $KD_DHD).
 var dhdArgs atomic.Value
 
-func init() { dhdArgs.Store("") }
+// dhdDefault: the dhd watchdog wakes every 10 ms, and its SDIO access is one side of the
+// unload deadlock (rmmod waiting on ksdioirqd, that on the driver lock the watchdog holds
+// while it waits for the SDIO host). Re-armed 60 s ahead on every clock change, it never
+// runs in a ~10 s wake. Not 0: a build with SDTEST divides by it at load. Stress test of
+// 7 Nov 2026 on this device: 2 hangs in 35 unloads without it, 0 in 99 with it, connect
+// time the same (5.2 s vs 5.1 s). On the charger it still runs, once a minute.
+const dhdDefault = "dhd_watchdog_ms=60000"
+
+func init() { dhdArgs.Store(dhdDefault) }
 
 var dhdArgsOK = regexp.MustCompile(`^([a-z_]+=[0-9]+)( [a-z_]+=[0-9]+)*$`)
 
@@ -123,7 +131,7 @@ func stressCycle() bool {
 	}
 	args, n, ok := stressTake()
 	if !ok {
-		dhdArgs.Store("")
+		dhdArgs.Store(dhdDefault)
 		return false
 	}
 	beat()
@@ -164,7 +172,7 @@ func stressCycle() bool {
 			log.Printf("stress: %d cycles without an address, ending it", stressNoIP)
 			rmState(stressFile)
 			stressNoIP = 0
-			dhdArgs.Store("")
+			dhdArgs.Store(dhdDefault)
 			wifiOff()
 			reconnectWifi() // back to a normal load
 			stressLoaded = "-"
